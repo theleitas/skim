@@ -1,0 +1,825 @@
+from __future__ import annotations
+
+import html
+import re
+import textwrap
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Iterable
+
+import streamlit as st
+import streamlit.components.v1 as components
+
+
+APP_NAME = "Skim"
+REQUEST_HEADERS = {
+    "User-Agent": "SkimPersonalNews/0.1 (+https://github.com/theleitas)",
+}
+
+
+@dataclass(frozen=True)
+class NewsSource:
+    name: str
+    url: str
+    group: str
+    topics: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Story:
+    id: str
+    source: str
+    group: str
+    title: str
+    link: str
+    summary_text: str
+    published: datetime | None
+    topics: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RankedStory:
+    story: Story
+    cluster_key: str
+    references: int
+    score: float
+
+
+BATCH_SIZE = 20
+
+TOPICS = {
+    "World": ("world", "war", "conflict", "diplomacy", "election", "government"),
+    "US": ("u.s.", "us ", "america", "congress", "white house", "supreme court"),
+    "Politics": ("politic", "election", "senate", "president", "minister", "policy"),
+    "Business": ("business", "company", "earnings", "market", "economy", "trade"),
+    "Tech": ("technology", "software", "startup", "semiconductor", "cyber"),
+    "AI": (" ai ", "artificial intelligence", "openai", "model", "chatbot"),
+    "Science": ("science", "space", "research", "study", "nasa", "physics"),
+    "Climate": ("climate", "weather", "emissions", "energy", "warming"),
+    "Health": ("health", "disease", "drug", "vaccine", "hospital", "medicine"),
+    "Culture": ("film", "music", "book", "culture", "art", "media"),
+    "Sports": ("sport", "nba", "nfl", "mlb", "soccer", "tennis", "golf"),
+    "Reddit Hot": ("reddit",),
+    "Hacker News": ("hacker news", "startup", "programming", "developer"),
+}
+
+NEWS_SOURCES = (
+    NewsSource("BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml", "Major News", ("World",)),
+    NewsSource("BBC Top Stories", "https://feeds.bbci.co.uk/news/rss.xml", "Major News", ("World", "US")),
+    NewsSource("NPR News", "https://feeds.npr.org/1001/rss.xml", "Major News", ("US", "Politics", "Culture")),
+    NewsSource("The Guardian World", "https://www.theguardian.com/world/rss", "Major News", ("World", "Politics")),
+    NewsSource("The Guardian US", "https://www.theguardian.com/us-news/rss", "Major News", ("US", "Politics")),
+    NewsSource("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml", "Major News", ("World",)),
+    NewsSource("NYT Top Stories", "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml", "Major News", ("World", "US")),
+    NewsSource("NYT World", "https://rss.nytimes.com/services/xml/rss/nyt/World.xml", "Major News", ("World",)),
+    NewsSource("NYT Technology", "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml", "Major News", ("Tech", "AI")),
+    NewsSource("CNN Top Stories", "http://rss.cnn.com/rss/cnn_topstories.rss", "Major News", ("World", "US")),
+    NewsSource("ABC News", "https://abcnews.go.com/abcnews/topstories", "Major News", ("US", "World")),
+    NewsSource("CBS News", "https://www.cbsnews.com/latest/rss/main", "Major News", ("US", "World")),
+    NewsSource("Google News Top", "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("World", "US")),
+    NewsSource("Google News Business", "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("Business",)),
+    NewsSource("Google News Technology", "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("Tech", "AI")),
+    NewsSource("Google News Science", "https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("Science",)),
+    NewsSource("Google News Health", "https://news.google.com/rss/headlines/section/topic/HEALTH?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("Health",)),
+    NewsSource("Reddit r/news", "https://www.reddit.com/r/news/hot/.rss", "Social", ("Reddit Hot", "US", "World")),
+    NewsSource("Reddit r/worldnews", "https://www.reddit.com/r/worldnews/hot/.rss", "Social", ("Reddit Hot", "World")),
+    NewsSource("Reddit r/technology", "https://www.reddit.com/r/technology/hot/.rss", "Social", ("Reddit Hot", "Tech")),
+    NewsSource("Reddit r/artificial", "https://www.reddit.com/r/artificial/hot/.rss", "Social", ("Reddit Hot", "AI")),
+    NewsSource("Hacker News", "https://news.ycombinator.com/rss", "Social", ("Hacker News", "Tech", "AI")),
+)
+
+STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "has",
+    "have", "he", "her", "his", "in", "is", "it", "its", "new", "of", "on", "or",
+    "said", "says", "she", "that", "the", "their", "this", "to", "was", "were",
+    "with", "you", "after", "about", "over", "into", "latest", "live", "updates",
+    "how", "why", "what", "when", "where", "who", "more", "than",
+}
+
+
+def page_style() -> None:
+    st.markdown(
+        """
+        <style>
+            :root {
+                --skim-ink: #f6f3ed;
+                --skim-muted: #b5aea3;
+                --skim-border: #3d3934;
+                --skim-paper: #000000;
+                --skim-card: #11100f;
+                --skim-accent: #f1c45b;
+                --skim-green: #77d2a1;
+            }
+
+            .stApp {
+                background: #000000;
+                color: var(--skim-ink);
+            }
+
+            [data-testid="stAppViewContainer"] > .main {
+                padding-top: 1.2rem;
+            }
+
+            .block-container {
+                max-width: 860px;
+                padding-left: 1.1rem;
+                padding-right: 1.1rem;
+            }
+
+            h1, h2, h3, p {
+                letter-spacing: 0;
+            }
+
+            .skim-header {
+                display: flex;
+                align-items: end;
+                justify-content: space-between;
+                gap: 1rem;
+                border-bottom: 1px solid #2f2b25;
+                padding-bottom: 0.9rem;
+                margin-bottom: 1rem;
+            }
+
+            .skim-brand {
+                font-size: 2.2rem;
+                line-height: 1;
+                font-weight: 800;
+            }
+
+            .skim-tagline {
+                color: var(--skim-muted);
+                font-size: 0.95rem;
+                margin-top: 0.25rem;
+            }
+
+            .skim-pill {
+                border: 1px solid var(--skim-border);
+                border-radius: 999px;
+                padding: 0.35rem 0.7rem;
+                background: #151412;
+                color: #ddd5c8;
+                font-size: 0.82rem;
+                white-space: nowrap;
+            }
+
+            [data-testid="stVerticalBlockBorderWrapper"] {
+                background:
+                    linear-gradient(145deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)),
+                    var(--skim-card);
+                border: 1px solid #4a443c;
+                border-left: 4px solid var(--skim-accent);
+                border-radius: 8px;
+                box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
+            }
+
+            .story-meta {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.45rem;
+                color: var(--skim-muted);
+                font-size: 0.78rem;
+                text-transform: uppercase;
+                letter-spacing: 0;
+                margin-bottom: 0.45rem;
+            }
+
+            .story h2 {
+                font-size: clamp(1.18rem, 2vw, 1.42rem);
+                line-height: 1.22;
+                margin: 0 0 0.78rem 0;
+                color: var(--skim-ink);
+                max-width: 34rem;
+            }
+
+            .summary-grid {
+                display: grid;
+                grid-template-columns: 1fr;
+                gap: 0.7rem;
+                color: #ebe5da;
+                font-size: 0.95rem;
+                line-height: 1.5;
+            }
+
+            .summary-grid b {
+                color: var(--skim-ink);
+            }
+
+            .summary-field {
+                border-top: 1px solid #2e2a25;
+                padding-top: 0.58rem;
+            }
+
+            .interaction-label {
+                color: var(--skim-muted);
+                font-size: 0.76rem;
+                text-transform: uppercase;
+                margin: 0.85rem 0 0.35rem 0;
+            }
+
+            .share-button {
+                border: 1px solid #4a443c;
+                background: #171512;
+                color: #f6f3ed;
+                border-radius: 6px;
+                padding: 0.4rem 0.62rem;
+                font-size: 0.9rem;
+                cursor: pointer;
+                width: 100%;
+            }
+
+            .share-button:hover {
+                border-color: var(--skim-accent);
+            }
+
+            .skim-footnote {
+                color: var(--skim-muted);
+                font-size: 0.82rem;
+                line-height: 1.4;
+            }
+
+            div[data-testid="stMetric"] {
+                background: #0f0e0d;
+                border: 1px solid #2c2823;
+                border-radius: 8px;
+                padding: 0.55rem 0.7rem;
+            }
+
+            .stButton > button,
+            .stLinkButton > a {
+                background: #171512;
+                border-color: #4a443c;
+                color: #f6f3ed;
+                border-radius: 6px;
+                min-height: 2.25rem;
+            }
+
+            .stButton > button:hover,
+            .stLinkButton > a:hover {
+                border-color: var(--skim-accent);
+                color: #ffffff;
+            }
+
+            [data-testid="stExpander"] {
+                background: #0e0d0c;
+                border: 1px solid #2c2823;
+                border-radius: 8px;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def clean_text(value: str | None) -> str:
+    if not value:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", value)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def parse_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except (TypeError, ValueError, IndexError):
+        try:
+            iso_value = value.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(iso_value)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except ValueError:
+            return None
+
+
+def local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def child_text(parent: ET.Element, names: Iterable[str]) -> str:
+    wanted = set(names)
+    for child in parent:
+        if local_name(child.tag) in wanted and child.text:
+            return clean_text(child.text)
+    return ""
+
+
+def child_link(parent: ET.Element) -> str:
+    for child in parent:
+        if local_name(child.tag) == "link":
+            href = child.attrib.get("href")
+            if href:
+                return href
+            if child.text:
+                return clean_text(child.text)
+    return ""
+
+
+def stable_id(source_name: str, title: str, link: str) -> str:
+    raw = f"{source_name}|{title}|{link}".lower()
+    return re.sub(r"[^a-z0-9]+", "-", raw).strip("-")[:96]
+
+
+def normalize_word(word: str) -> str:
+    replacements = {
+        "iranian": "iran",
+        "american": "america",
+        "americans": "america",
+        "british": "britain",
+        "chinese": "china",
+        "russian": "russia",
+    }
+    word = replacements.get(word, word)
+    for suffix in ("ing", "ed", "es", "s"):
+        if len(word) > 5 and word.endswith(suffix):
+            return word[: -len(suffix)]
+    return word
+
+
+def significant_words(text: str) -> tuple[str, ...]:
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return tuple(
+        normalize_word(word)
+        for word in words
+        if len(word) > 2 and word not in STOPWORDS and not word.isdigit()
+    )
+
+
+def story_tokens(story: Story) -> set[str]:
+    return set(significant_words(f"{story.title} {story.summary_text}"))
+
+
+def cluster_key_from_tokens(tokens: set[str], fallback: str) -> str:
+    if not tokens:
+        return stable_id("story", fallback, "")
+    return "-".join(sorted(tokens)[:10])
+
+
+def clean_headline_source(title: str) -> str:
+    title = clean_text(title)
+    title = re.sub(r"\s+-\s+[^-]{2,45}$", "", title)
+    title = re.sub(r"\s+\|\s+[^|]{2,45}$", "", title)
+    title = re.sub(r"\s+", " ", title).strip()
+    return title.rstrip(" .")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
+    request = urllib.request.Request(source.url, headers=REQUEST_HEADERS)
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            xml_bytes = response.read()
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        return [], f"{source.name}: {exc}"
+
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError as exc:
+        return [], f"{source.name}: could not parse feed ({exc})"
+
+    entries = [node for node in root.iter() if local_name(node.tag) in {"item", "entry"}]
+    stories: list[Story] = []
+    for entry in entries[:30]:
+        title = child_text(entry, ("title",))
+        link = child_link(entry)
+        summary = child_text(entry, ("description", "summary", "content", "encoded"))
+        date_text = child_text(entry, ("pubDate", "published", "updated"))
+        if not title or not link:
+            continue
+        stories.append(
+            Story(
+                id=stable_id(source.name, title, link),
+                source=source.name,
+                group=source.group,
+                title=title,
+                link=link,
+                summary_text=summary,
+                published=parse_date(date_text),
+                topics=source.topics,
+            )
+        )
+    return stories, None
+
+
+def fetch_stories(selected_topics: tuple[str, ...], include_aggregators: bool, include_social: bool) -> tuple[list[Story], list[str]]:
+    stories: list[Story] = []
+    errors: list[str] = []
+    topic_set = set(selected_topics)
+
+    for source in NEWS_SOURCES:
+        if source.group == "Aggregator" and not include_aggregators:
+            continue
+        if source.group == "Social" and not include_social:
+            continue
+        if topic_set and not topic_set.intersection(source.topics):
+            continue
+        source_stories, error = fetch_source(source)
+        stories.extend(source_stories)
+        if error:
+            errors.append(error)
+
+    return stories, errors
+
+
+def cluster_stories(stories: list[Story]) -> list[list[Story]]:
+    clusters: list[list[Story]] = []
+    cluster_tokens: list[set[str]] = []
+
+    for story in stories:
+        tokens = story_tokens(story)
+        matched_index = None
+        for index, existing_tokens in enumerate(cluster_tokens):
+            shared = tokens.intersection(existing_tokens)
+            union = tokens.union(existing_tokens)
+            overlap = len(shared) / max(1, len(union))
+            if overlap >= 0.3 or len(shared) >= 4:
+                matched_index = index
+                break
+
+        if matched_index is None:
+            clusters.append([story])
+            cluster_tokens.append(tokens)
+        else:
+            clusters[matched_index].append(story)
+            cluster_tokens[matched_index].update(tokens)
+
+    return clusters
+
+
+def story_score(story: Story, references: int, cluster_size: int) -> float:
+    now = datetime.now(timezone.utc)
+    published = story.published or now
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=timezone.utc)
+    age_hours = max(0.0, (now - published.astimezone(timezone.utc)).total_seconds() / 3600)
+    recency_score = max(0.0, 48.0 - age_hours)
+    group_weight = {"Aggregator": 16.0, "Social": 12.0, "Major News": 10.0}.get(story.group, 8.0)
+    return (references * 18.0) + (cluster_size * 8.0) + recency_score + group_weight
+
+
+def rank_stories(stories: list[Story]) -> list[RankedStory]:
+    ranked: list[RankedStory] = []
+    for cluster in cluster_stories(stories):
+        sources = {story.source for story in cluster}
+        groups = {story.group for story in cluster}
+        references = len(sources) + (2 if "Aggregator" in groups else 0) + (1 if "Social" in groups else 0)
+        representative = max(
+            cluster,
+            key=lambda story: story_score(story, references=references, cluster_size=len(cluster)),
+        )
+        tokens = story_tokens(representative)
+        ranked.append(
+            RankedStory(
+                story=representative,
+                cluster_key=cluster_key_from_tokens(tokens, representative.title),
+                references=references,
+                score=story_score(representative, references=references, cluster_size=len(cluster)),
+            )
+        )
+
+    ranked.sort(key=lambda item: item.score, reverse=True)
+    return ranked
+
+
+def headline(title: str, max_words: int) -> str:
+    words = clean_headline_source(title).split()
+    if len(words) <= max_words:
+        return " ".join(words)
+    return " ".join(words[:max_words]).rstrip(",:;")
+
+
+def excerpt(text: str, width: int) -> str:
+    shortened = textwrap.shorten(clean_text(text), width=width, placeholder="")
+    shortened = shortened.rstrip(" ,;:")
+    if shortened and shortened[-1] not in ".!?":
+        shortened += "."
+    return shortened
+
+
+def split_sentences(text: str) -> list[str]:
+    text = clean_text(text)
+    if not text:
+        return []
+    return [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+
+
+def infer_topics(story: Story) -> tuple[str, ...]:
+    headline_text = f" {story.title} ".lower()
+    haystack = f"{headline_text} {story.summary_text} ".lower()
+    matches = list(story.topics)
+    for topic, needles in TOPICS.items():
+        if topic in matches:
+            continue
+        headline_match = any(needle in headline_text for needle in needles)
+        body_match_count = sum(1 for needle in needles if needle in haystack)
+        if headline_match or body_match_count >= 2:
+            matches.append(topic)
+    return tuple(matches[:4]) or story.topics[:2]
+
+
+def why_theme(story: Story, topics: tuple[str, ...]) -> str:
+    headline_text = f" {story.title} ".lower()
+    if "Business" in topics and (
+        "Business" in story.topics
+        or any(word in headline_text for word in ("market", "earnings", "company", "trade", "economy"))
+    ):
+        return "business"
+    if ("AI" in topics or "Tech" in topics) and (
+        "AI" in story.topics
+        or "Tech" in story.topics
+        or any(word in headline_text for word in ("ai", "technology", "software", "chip", "cyber"))
+    ):
+        return "technology"
+    if "Health" in topics and (
+        "Health" in story.topics
+        or any(word in headline_text for word in ("health", "hospital", "medicine", "drug", "disease", "vaccine"))
+    ):
+        return "health"
+    if "World" in topics or "Politics" in topics or "US" in topics:
+        return "politics"
+    return "general"
+
+
+def summarize(story: Story, detail: int) -> dict[str, str]:
+    sentences = split_sentences(story.summary_text)
+    first_sentence = sentences[0] if sentences else story.title
+    second_sentence = sentences[1] if len(sentences) > 1 else ""
+    topics = infer_topics(story)
+    topic_phrase = ", ".join(topics[:3])
+
+    context = (
+        f"Historically, this belongs to the larger {topic_phrase.lower()} pattern: pressure builds, institutions respond, "
+        "and public attention moves faster than the underlying systems can adjust.\n"
+        "In the near future, watch whether this becomes an isolated episode, a policy or market reaction, "
+        "or the start of a longer argument over accountability and power."
+    )
+    if story.group == "Social":
+        context = (
+            "Historically, social-first stories often begin as weak signals before institutions, journalists, or companies verify the facts.\n"
+            "In the near future, the key question is whether this stays as online attention or breaks into mainstream coverage, "
+            "policy response, or real-world behavior."
+        )
+    elif story.group == "Aggregator":
+        context = (
+            "Historically, aggregator pickup means several editorial systems are converging on the same subject at once.\n"
+            "In the near future, watch which framing wins: crisis, opportunity, scandal, market signal, or political turning point."
+        )
+
+    theme = why_theme(story, topics)
+    why = (
+        "It matters because today's story can become tomorrow's operating environment: the assumptions leaders make, "
+        "the risks people prepare for, and the tradeoffs institutions are forced to defend."
+    )
+    if theme == "health":
+        why = (
+            "Health stories matter beyond the immediate facts because they can change trust in institutions, access to care, "
+            "household decisions, and public budgets. Over time, these stories often reveal whether systems are resilient "
+            "or merely reacting after strain becomes visible."
+        )
+    elif theme == "business":
+        why = (
+            "Business shifts rarely stay inside one company or one market. They can move prices, jobs, investor expectations, "
+            "supply chains, and political pressure, and the consequences often show up later in household costs or strategic decisions."
+        )
+    elif theme == "technology":
+        why = (
+            "Technology stories matter because infrastructure choices become social choices. What looks like a product update today "
+            "can reshape labor, privacy, competition, education, regulation, and who gets leverage in the next economic cycle."
+        )
+    elif theme == "politics":
+        why = (
+            "Political and global stories matter because they change the map of trust, security, alliances, and legitimacy. "
+            "The short-term event may pass quickly, but the precedent it sets can shape diplomacy, markets, rights, and public confidence."
+        )
+
+    if detail >= 4 and second_sentence:
+        happened = f"{first_sentence} {second_sentence}"
+    else:
+        happened = first_sentence
+    if story.group == "Aggregator":
+        happened = clean_headline_source(story.title)
+
+    return {
+        "Source": story.source,
+        "What happened": excerpt(happened, width=300),
+        "Context": context,
+        "Why it matters": why,
+    }
+
+
+def story_age(story: Story) -> str:
+    if not story.published:
+        return "recent"
+    now = datetime.now(story.published.tzinfo or timezone.utc)
+    delta = now - story.published
+    hours = max(0, int(delta.total_seconds() // 3600))
+    if hours < 1:
+        return "just now"
+    if hours < 24:
+        return f"{hours}h ago"
+    return story.published.strftime("%b %-d")
+
+
+def share_component(story: Story) -> None:
+    payload_title = html.escape(story.title, quote=True)
+    payload_url = html.escape(story.link, quote=True)
+    fallback = urllib.parse.quote(story.link)
+    components.html(
+        f"""
+        <button class="share-button" onclick="
+            if (navigator.share) {{
+                navigator.share({{title: '{payload_title}', url: '{payload_url}'}});
+            }} else {{
+                window.open('sms:&body={fallback}', '_blank');
+            }}
+        ">Share</button>
+        <style>
+            .share-button {{
+                border: 1px solid #4a443c;
+                background: #171512;
+                color: #f6f3ed;
+                border-radius: 6px;
+                padding: 0.45rem 0.62rem;
+                font-size: 0.9rem;
+                cursor: pointer;
+                width: 100%;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            }}
+            .share-button:hover {{ border-color: #f1c45b; }}
+        </style>
+        """,
+        height=45,
+    )
+
+
+def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int) -> None:
+    story = ranked_story.story
+    archived = story.id in st.session_state.archived
+    with st.container(border=True):
+        meta = f"{story.source} / {story.group} / {story_age(story)} / referenced {ranked_story.references}x"
+        st.markdown(f'<div class="story-meta">{html.escape(meta)}</div>', unsafe_allow_html=True)
+        st.markdown(f"<h2>{html.escape(headline(story.title, max_headline_words))}</h2>", unsafe_allow_html=True)
+
+        summary = summarize(story, detail)
+        rows = "".join(
+            f'<div class="summary-field"><b>{html.escape(label)}:</b> {html.escape(value).replace(chr(10), "<br>")}</div>'
+            for label, value in summary.items()
+        )
+        st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="interaction-label">Interaction</div>', unsafe_allow_html=True)
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col1:
+            st.link_button("Full story", story.link, use_container_width=True)
+        with col2:
+            label = "Archived" if archived else "Archive"
+            if st.button(label, key=f"archive-{story.id}", icon=":material/bookmark:", use_container_width=True):
+                if archived:
+                    st.session_state.archived.remove(story.id)
+                else:
+                    st.session_state.archived.add(story.id)
+                st.rerun()
+        with col3:
+            share_component(story)
+
+
+def render_header() -> None:
+    st.markdown(
+        f"""
+        <div class="skim-header">
+            <div>
+                <div class="skim-brand">{APP_NAME}</div>
+                <div class="skim-tagline">Fast personal news, trimmed to what matters.</div>
+            </div>
+            <div class="skim-pill">Free feeds / local summaries</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def settings_signature(selected_topics: list[str], include_aggregators: bool, include_social: bool, show_archived: bool) -> tuple:
+    return (tuple(selected_topics), include_aggregators, include_social, show_archived)
+
+
+def select_batch(ranked_stories: list[RankedStory], show_archived: bool) -> list[RankedStory]:
+    seen_cluster_keys = st.session_state.seen_cluster_keys
+    current_cluster_keys = st.session_state.current_cluster_keys
+
+    if current_cluster_keys:
+        current = [item for item in ranked_stories if item.cluster_key in current_cluster_keys]
+        if not show_archived:
+            current = [item for item in current if item.story.id not in st.session_state.archived]
+        if current:
+            return current[:BATCH_SIZE]
+
+    fresh = [
+        item
+        for item in ranked_stories
+        if item.cluster_key not in seen_cluster_keys
+        and (show_archived or item.story.id not in st.session_state.archived)
+    ]
+    if len(fresh) < BATCH_SIZE:
+        st.session_state.seen_cluster_keys = set()
+        fresh = [
+            item
+            for item in ranked_stories
+            if show_archived or item.story.id not in st.session_state.archived
+        ]
+
+    batch = fresh[:BATCH_SIZE]
+    st.session_state.current_cluster_keys = [item.cluster_key for item in batch]
+    return batch
+
+
+def main() -> None:
+    st.set_page_config(page_title=APP_NAME, page_icon="S", layout="centered")
+    page_style()
+
+    if "archived" not in st.session_state:
+        st.session_state.archived = set()
+    if "seen_cluster_keys" not in st.session_state:
+        st.session_state.seen_cluster_keys = set()
+    if "current_cluster_keys" not in st.session_state:
+        st.session_state.current_cluster_keys = []
+    if "last_settings" not in st.session_state:
+        st.session_state.last_settings = None
+
+    render_header()
+
+    with st.expander("Customize", expanded=False):
+        selected_topics = st.multiselect(
+            "Topics",
+            options=list(TOPICS.keys()),
+            default=["World", "US", "Politics", "Tech", "AI", "Reddit Hot"],
+        )
+        col1, col2 = st.columns(2)
+        with col1:
+            detail = st.slider("Summary depth", min_value=1, max_value=5, value=3, step=1)
+            max_headline_words = st.slider("Headline words", min_value=8, max_value=16, value=13, step=1)
+        with col2:
+            include_social = st.toggle("Reddit and Hacker News", value=True)
+            include_aggregators = st.toggle("Google News aggregators", value=True)
+            show_archived = st.toggle("Show archived stories", value=False)
+            if st.button("Reset seen stories", use_container_width=True):
+                st.session_state.seen_cluster_keys = set()
+                st.session_state.current_cluster_keys = []
+                st.rerun()
+        st.caption(
+            "X is not included yet because the official useful API paths generally require paid access. "
+            "Skim can add it later when you want to connect an X developer account."
+        )
+
+    current_settings = settings_signature(selected_topics, include_aggregators, include_social, show_archived)
+    if st.session_state.last_settings != current_settings:
+        st.session_state.current_cluster_keys = []
+        st.session_state.last_settings = current_settings
+
+    stories, errors = fetch_stories(tuple(selected_topics), include_aggregators, include_social)
+    ranked_stories = rank_stories(stories)
+    batch = select_batch(ranked_stories, show_archived)
+
+    col1, col2, col3 = st.columns([1, 1, 1])
+    col1.metric("Stories", len(batch))
+    col2.metric("Archived", len(st.session_state.archived))
+    if col3.button("Refresh", icon=":material/refresh:", use_container_width=True):
+        st.session_state.seen_cluster_keys.update(st.session_state.current_cluster_keys)
+        st.session_state.current_cluster_keys = []
+        st.rerun()
+
+    if errors:
+        with st.expander("Feed notes", expanded=False):
+            for error in errors[:12]:
+                st.write(error)
+
+    if not batch:
+        st.info("No stories matched this setup. Open Customize and broaden the topics or source types.")
+        return
+
+    for ranked_story in batch:
+        render_story(ranked_story, detail=detail, max_headline_words=max_headline_words)
+
+    st.markdown(
+        """
+        <p class="skim-footnote">
+            Skim currently uses public RSS feeds and an offline summarizer. No OpenAI key,
+            paid news API, Reddit token, or X token is required for this first version.
+        </p>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+if __name__ == "__main__":
+    main()
