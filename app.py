@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Iterable
 
@@ -21,8 +21,10 @@ APP_NAME = "Skim"
 BATCH_SIZE = 20
 ITEMS_PER_SOURCE = 50
 FEED_TIMEOUT_SECONDS = 15
+RESEARCH_TIMEOUT_SECONDS = 8
 MIN_SUMMARY_WORDS = 18
 MIN_NEW_SUMMARY_TERMS = 7
+NO_REPEAT_HOURS = 48
 OPENAI_SUMMARY_MODEL = "gpt-5.6-luna"
 OPENAI_DEEP_MODEL = "gpt-5.6-terra"
 AI_SUMMARY_PROMPT_VERSION = "context-specific-v2"
@@ -366,6 +368,14 @@ def clean_text(value: str | None) -> str:
     return text
 
 
+def clean_page_text(value: str | None) -> str:
+    if not value:
+        return ""
+    text = re.sub(r"(?is)<(script|style|noscript|svg|nav|footer|header|form)[^>]*>.*?</\1>", " ", value)
+    text = re.sub(r"(?i)</(p|h1|h2|h3|li|div)>", ". ", text)
+    return clean_text(text)
+
+
 def parse_date(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -690,9 +700,10 @@ def persist_keywords_to_query_params() -> None:
 
 def complete_story_refresh() -> None:
     fetch_source.clear()
-    st.session_state.seen_cluster_keys = set()
+    fetch_research_snippet.clear()
     st.session_state.current_cluster_keys = []
     st.session_state.last_settings = None
+    st.session_state.deep_analyses = {}
 
 
 def keyword_match_count(story: Story, keywords: tuple[str, ...]) -> int:
@@ -1022,6 +1033,63 @@ def story_learning_links(story: Story, topics: tuple[str, ...]) -> tuple[tuple[s
     return tuple([*links[:2], wiki_link])
 
 
+def extract_research_snippet(page_html: str, max_chars: int = 900) -> str:
+    description_match = re.search(
+        r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)["\']',
+        page_html,
+        flags=re.IGNORECASE,
+    )
+    snippets: list[str] = []
+    if description_match:
+        snippets.append(clean_text(description_match.group(1)))
+
+    paragraph_matches = re.findall(r"(?is)<p[^>]*>(.*?)</p>", page_html)
+    for paragraph_html in paragraph_matches[:8]:
+        paragraph = clean_page_text(paragraph_html)
+        if len(paragraph.split()) >= 12:
+            snippets.append(paragraph)
+        if len(" ".join(snippets)) >= max_chars:
+            break
+
+    if not snippets:
+        snippets.append(clean_page_text(page_html[:20000]))
+    return excerpt(" ".join(snippets), width=max_chars)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_research_snippet(url: str) -> str:
+    if not url.startswith(("https://", "http://")):
+        return ""
+    request = urllib.request.Request(url, headers=REQUEST_HEADERS)
+    try:
+        with urllib.request.urlopen(request, timeout=RESEARCH_TIMEOUT_SECONDS) as response:
+            content_type = response.headers.get("Content-Type", "")
+            if "text/html" not in content_type and "application/xhtml" not in content_type:
+                return ""
+            page_bytes = response.read(250_000)
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return ""
+
+    page_html = page_bytes.decode("utf-8", errors="ignore")
+    return extract_research_snippet(page_html)
+
+
+def research_notes(story: Story, topics: tuple[str, ...]) -> str:
+    candidate_links = [("Article page", story.link), *story_learning_links(story, topics)[:2]]
+    notes: list[str] = []
+    seen_urls: set[str] = set()
+    for label, url in candidate_links:
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        snippet = fetch_research_snippet(url)
+        if snippet:
+            notes.append(f"{label}: {snippet}")
+        if len(notes) == 3:
+            break
+    return "\n".join(notes)
+
+
 def lesson_text(story: Story, topics: tuple[str, ...]) -> str:
     haystack = story_haystack(story)
     if "wildberries" in haystack:
@@ -1348,6 +1416,7 @@ def ai_summary_cached(
     provider: str,
     model: str,
     prompt_version: str,
+    refresh_key: str,
     story_id: str,
     title: str,
     source: str,
@@ -1356,6 +1425,7 @@ def ai_summary_cached(
     link: str,
     topics: tuple[str, ...],
     detail: int,
+    research_text: str,
 ) -> dict:
     prompt = textwrap.dedent(
         f"""
@@ -1367,20 +1437,25 @@ def ai_summary_cached(
         Full story URL: {link}
         Desired detail level: {detail}/5
         Stable story id: {story_id}
+        Story refresh key: {refresh_key}
         Prompt version: {prompt_version}
+        Research notes gathered at refresh time:
+        {research_text or "No additional research notes were available; use the RSS material carefully."}
         """
     ).strip()
     instructions = """
-    You are Skim, a sharp personal news analyst. Use only the provided headline, source,
-    RSS summary, topic labels, and URL; do not invent facts. Return valid JSON with:
+    You are Skim, a sharp personal news analyst. Use the provided headline, source,
+    RSS summary, URL, topic labels, and refresh-time research notes; do not invent facts.
+    Return valid JSON with:
     summary, context, lesson, and links. summary is at least three sentences explaining
     what happened in plain English, never the word "comments", and never just a headline.
     context is one thoughtful paragraph about this exact story's larger system,
-    historical pattern, likely follow-on effects, and why this event is a signal. Do
-    not use generic reusable context. Name or clearly refer to the story's central
-    subject, place, institution, company, disease, technology, market, or conflict.
-    Explain what the story could trigger next and what larger change or stress it may
-    reveal. lesson is a succinct thing to know, understand, or research next.
+    historical pattern, likely follow-on effects, and why this event is a signal. Use
+    the research notes to add specificity when they are available. Do not use generic
+    reusable context. Name or clearly refer to the story's central subject, place,
+    institution, company, disease, technology, market, or conflict. Explain what the
+    story could trigger next and what larger change or stress it may reveal. lesson is
+    a succinct thing to know, understand, or research next.
     links is exactly three objects with label and url fields. The first two links must
     be useful non-Wikipedia references tied to the story, such as source pages,
     official institutions, data/background pages, reputable topic hubs, or related
@@ -1517,18 +1592,20 @@ def ensure_three_sentence_summary(summary: str, story: Story, detail: int) -> st
     return " ".join(combined)
 
 
-def smart_summarize(story: Story, detail: int) -> dict[str, str]:
+def smart_summarize(story: Story, detail: int, refresh_key: str) -> dict[str, str]:
     provider = configured_ai_provider()
     if not provider:
         return summarize(story, detail)
 
     topics = infer_topics(story)
     fallback_links = story_learning_links(story, topics)
+    gathered_research = research_notes(story, topics)
     try:
         ai_result = ai_summary_cached(
             provider,
             ai_model(provider, deep=False),
             AI_SUMMARY_PROMPT_VERSION,
+            refresh_key,
             story.id,
             story.title,
             story.source,
@@ -1537,6 +1614,7 @@ def smart_summarize(story: Story, detail: int) -> dict[str, str]:
             story.link,
             topics,
             detail,
+            gathered_research,
         )
     except Exception:
         return summarize(story, detail)
@@ -1654,7 +1732,7 @@ def render_summary_value(value: str) -> str:
     return "".join(rendered)
 
 
-def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int) -> None:
+def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int, refresh_key: str) -> None:
     story = ranked_story.story
     archived = story.id in st.session_state.archived
     with st.container(border=True):
@@ -1677,7 +1755,7 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
             story_title = f'<h2 class="story-title story-title-full">{story_title_text}</h2>'
             st.markdown(story_title, unsafe_allow_html=True)
 
-        summary = smart_summarize(story, detail)
+        summary = smart_summarize(story, detail, refresh_key)
         rows = ""
         for label, value in summary.items():
             label_html = f"<b>{html.escape(label)}:</b> " if label else ""
@@ -1743,8 +1821,63 @@ def settings_signature(
     return (tuple(selected_topics), include_aggregators, include_social, show_archived, keywords)
 
 
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def parse_iso_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def prune_shown_cluster_history() -> None:
+    history = dict(st.session_state.get("shown_cluster_history", {}))
+    cutoff = utc_now() - timedelta(hours=NO_REPEAT_HOURS)
+    pruned = {
+        cluster_key: timestamp
+        for cluster_key, timestamp in history.items()
+        if (parsed := parse_iso_datetime(str(timestamp))) and parsed >= cutoff
+    }
+    st.session_state.shown_cluster_history = pruned
+
+
+def mark_batch_shown(batch: list[RankedStory]) -> None:
+    if not batch:
+        return
+    now = utc_now().isoformat()
+    history = dict(st.session_state.get("shown_cluster_history", {}))
+    for item in batch:
+        history[item.cluster_key] = now
+    st.session_state.shown_cluster_history = history
+    st.session_state.batch_refreshed_at = now
+    st.session_state.batch_refresh_id = now
+
+
+def batch_refreshed_label() -> str:
+    refreshed_at = parse_iso_datetime(str(st.session_state.get("batch_refreshed_at", "")))
+    if not refreshed_at:
+        return ""
+    local_time = refreshed_at.astimezone()
+    formatted = local_time.strftime("%b %d, %Y at %I:%M %p %Z")
+    return formatted.replace(" 0", " ").replace(" at 0", " at ")
+
+
+def render_batch_timestamp(batch_size: int) -> None:
+    label = batch_refreshed_label()
+    if not label:
+        return
+    story_word = "article" if batch_size == 1 else "articles"
+    st.caption(f"{batch_size} {story_word} refreshed: {label} · No repeats for {NO_REPEAT_HOURS} hours")
+
+
 def select_batch(ranked_stories: list[RankedStory], show_archived: bool) -> list[RankedStory]:
-    seen_cluster_keys = st.session_state.seen_cluster_keys
+    prune_shown_cluster_history()
+    shown_cluster_keys = set(st.session_state.shown_cluster_history)
     current_cluster_keys = st.session_state.current_cluster_keys
 
     if current_cluster_keys:
@@ -1757,19 +1890,13 @@ def select_batch(ranked_stories: list[RankedStory], show_archived: bool) -> list
     fresh = [
         item
         for item in ranked_stories
-        if item.cluster_key not in seen_cluster_keys
+        if item.cluster_key not in shown_cluster_keys
         and (show_archived or item.story.id not in st.session_state.archived)
     ]
-    if len(fresh) < BATCH_SIZE:
-        st.session_state.seen_cluster_keys = set()
-        fresh = [
-            item
-            for item in ranked_stories
-            if show_archived or item.story.id not in st.session_state.archived
-        ]
 
     batch = fresh[:BATCH_SIZE]
     st.session_state.current_cluster_keys = [item.cluster_key for item in batch]
+    mark_batch_shown(batch)
     return batch
 
 
@@ -1779,14 +1906,20 @@ def main() -> None:
 
     if "archived" not in st.session_state:
         st.session_state.archived = set()
-    if "seen_cluster_keys" not in st.session_state:
-        st.session_state.seen_cluster_keys = set()
     if "current_cluster_keys" not in st.session_state:
         st.session_state.current_cluster_keys = []
     if "last_settings" not in st.session_state:
         st.session_state.last_settings = None
     if "deep_analyses" not in st.session_state:
         st.session_state.deep_analyses = {}
+    if "shown_cluster_history" not in st.session_state:
+        legacy_seen = st.session_state.get("seen_cluster_keys", set())
+        now = utc_now().isoformat()
+        st.session_state.shown_cluster_history = {cluster_key: now for cluster_key in legacy_seen}
+    if "batch_refresh_id" not in st.session_state:
+        st.session_state.batch_refresh_id = ""
+    if "batch_refreshed_at" not in st.session_state:
+        st.session_state.batch_refreshed_at = ""
     st.session_state.setdefault("selected_topics", ["World", "US", "Politics", "Tech", "AI", "Reddit Hot"])
     st.session_state.setdefault("detail", 3)
     st.session_state.setdefault("max_headline_words", 10)
@@ -1818,15 +1951,22 @@ def main() -> None:
         stories, errors = fetch_stories(tuple(selected_topics), include_aggregators, include_social, keywords)
         ranked_stories = rank_stories(stories, keywords)
     batch = select_batch(ranked_stories, show_archived)
+    render_batch_timestamp(len(batch))
 
     if not batch:
         st.info(
             "No stories had enough reported material for this setup. Skim now filters out headline-only items; "
-            "open Customize and broaden the topics or source types."
+            f"it also will not repeat stories shown in the last {NO_REPEAT_HOURS} hours. Open Customize and broaden the topics or source types."
         )
     else:
+        refresh_key = str(st.session_state.get("batch_refresh_id", ""))
         for ranked_story in batch:
-            render_story(ranked_story, detail=detail, max_headline_words=max_headline_words)
+            render_story(
+                ranked_story,
+                detail=detail,
+                max_headline_words=max_headline_words,
+                refresh_key=refresh_key,
+            )
 
     st.divider()
 
@@ -1834,8 +1974,9 @@ def main() -> None:
     col1.metric("Stories", len(batch))
     col2.metric("Archived", len(st.session_state.archived))
     if col3.button("Refresh", icon=":material/refresh:", use_container_width=True):
-        st.session_state.seen_cluster_keys.update(st.session_state.current_cluster_keys)
+        fetch_research_snippet.clear()
         st.session_state.current_cluster_keys = []
+        st.session_state.deep_analyses = {}
         st.rerun()
 
     if errors:
@@ -1857,8 +1998,8 @@ def main() -> None:
             st.toggle("Reddit and Hacker News", key="include_social")
             st.toggle("Google News aggregators", key="include_aggregators")
             st.toggle("Show archived stories", key="show_archived")
-            if st.button("Reset seen stories", use_container_width=True):
-                st.session_state.seen_cluster_keys = set()
+            if st.button("Clear 48-hour history", use_container_width=True):
+                st.session_state.shown_cluster_history = {}
                 st.session_state.current_cluster_keys = []
                 st.rerun()
         st.markdown("Keyword boosters")
