@@ -40,6 +40,7 @@ class Story:
     summary_text: str
     published: datetime | None
     topics: tuple[str, ...]
+    image_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,16 @@ def page_style() -> None:
                 max-width: 34rem;
             }
 
+            .story-image {
+                display: block;
+                width: 100%;
+                aspect-ratio: 4 / 3;
+                object-fit: cover;
+                border: 1px solid #373229;
+                border-radius: 8px;
+                background: #0b0a09;
+            }
+
             .story-source {
                 color: #9d968d;
                 font-size: 0.76rem;
@@ -326,10 +337,14 @@ def local_name(tag: str) -> str:
 
 
 def child_text(parent: ET.Element, names: Iterable[str]) -> str:
+    return clean_text(child_raw_text(parent, names))
+
+
+def child_raw_text(parent: ET.Element, names: Iterable[str]) -> str:
     wanted = set(names)
     for child in parent:
         if local_name(child.tag) in wanted and child.text:
-            return clean_text(child.text)
+            return child.text
     return ""
 
 
@@ -342,6 +357,32 @@ def child_link(parent: ET.Element) -> str:
             if child.text:
                 return clean_text(child.text)
     return ""
+
+
+def is_probable_image_url(url: str, type_hint: str = "") -> bool:
+    lowered = url.lower()
+    if type_hint.lower().startswith("image/"):
+        return True
+    return any(ext in lowered for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif"))
+
+
+def child_image(parent: ET.Element, summary_html: str) -> str | None:
+    img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', summary_html or "", flags=re.IGNORECASE)
+    if img_match:
+        url = html.unescape(img_match.group(1)).strip()
+        if url.startswith("http"):
+            return url
+
+    for node in parent.iter():
+        tag = local_name(node.tag)
+        url = node.attrib.get("url") or node.attrib.get("href")
+        type_hint = node.attrib.get("type", "")
+        medium = node.attrib.get("medium", "")
+        if tag in {"thumbnail", "content"} and url and (medium == "image" or is_probable_image_url(url, type_hint)):
+            return url
+        if tag == "enclosure" and url and is_probable_image_url(url, type_hint):
+            return url
+    return None
 
 
 def stable_id(source_name: str, title: str, link: str) -> str:
@@ -411,7 +452,8 @@ def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
     for entry in entries[:30]:
         title = child_text(entry, ("title",))
         link = child_link(entry)
-        summary = child_text(entry, ("description", "summary", "content", "encoded"))
+        summary_raw = child_raw_text(entry, ("description", "summary", "content", "encoded"))
+        summary = clean_text(summary_raw)
         date_text = child_text(entry, ("pubDate", "published", "updated"))
         if not title or not link:
             continue
@@ -425,12 +467,28 @@ def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
                 summary_text=summary,
                 published=parse_date(date_text),
                 topics=source.topics,
+                image_url=child_image(entry, summary_raw),
             )
         )
     return stories, None
 
 
-def fetch_stories(selected_topics: tuple[str, ...], include_aggregators: bool, include_social: bool) -> tuple[list[Story], list[str]]:
+def keyword_news_source(keyword: str) -> NewsSource:
+    query = urllib.parse.quote_plus(keyword.strip())
+    return NewsSource(
+        name=f"Keyword: {keyword.strip()}",
+        url=f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en",
+        group="Custom",
+        topics=("Custom",),
+    )
+
+
+def fetch_stories(
+    selected_topics: tuple[str, ...],
+    include_aggregators: bool,
+    include_social: bool,
+    custom_keywords: tuple[str, ...],
+) -> tuple[list[Story], list[str]]:
     stories: list[Story] = []
     errors: list[str] = []
     topic_set = set(selected_topics)
@@ -443,6 +501,12 @@ def fetch_stories(selected_topics: tuple[str, ...], include_aggregators: bool, i
         if topic_set and not topic_set.intersection(source.topics):
             continue
         source_stories, error = fetch_source(source)
+        stories.extend(source_stories)
+        if error:
+            errors.append(error)
+
+    for keyword in custom_keywords:
+        source_stories, error = fetch_source(keyword_news_source(keyword))
         stories.extend(source_stories)
         if error:
             errors.append(error)
@@ -475,26 +539,55 @@ def cluster_stories(stories: list[Story]) -> list[list[Story]]:
     return clusters
 
 
-def story_score(story: Story, references: int, cluster_size: int) -> float:
+def custom_keywords() -> tuple[str, ...]:
+    keywords = []
+    for index in range(9):
+        value = str(st.session_state.get(f"custom_keyword_{index}", "")).strip()
+        if value:
+            keywords.append(value)
+    return tuple(dict.fromkeys(keywords))
+
+
+def keyword_match_count(story: Story, keywords: tuple[str, ...]) -> int:
+    if not keywords:
+        return 0
+    haystack = f"{story.title} {story.summary_text}".lower()
+    token_set = story_tokens(story)
+    matches = 0
+    for keyword in keywords:
+        normalized_keyword = keyword.lower().strip()
+        keyword_tokens = set(significant_words(normalized_keyword))
+        if normalized_keyword in haystack or (keyword_tokens and keyword_tokens.issubset(token_set)):
+            matches += 1
+    return matches
+
+
+def story_score(story: Story, references: int, cluster_size: int, keywords: tuple[str, ...] = ()) -> float:
     now = datetime.now(timezone.utc)
     published = story.published or now
     if published.tzinfo is None:
         published = published.replace(tzinfo=timezone.utc)
     age_hours = max(0.0, (now - published.astimezone(timezone.utc)).total_seconds() / 3600)
     recency_score = max(0.0, 48.0 - age_hours)
-    group_weight = {"Aggregator": 16.0, "Social": 12.0, "Major News": 10.0}.get(story.group, 8.0)
-    return (references * 18.0) + (cluster_size * 8.0) + recency_score + group_weight
+    group_weight = {"Custom": 24.0, "Aggregator": 16.0, "Social": 12.0, "Major News": 10.0}.get(story.group, 8.0)
+    keyword_boost = keyword_match_count(story, keywords) * 34.0
+    return (references * 18.0) + (cluster_size * 8.0) + recency_score + group_weight + keyword_boost
 
 
-def rank_stories(stories: list[Story]) -> list[RankedStory]:
+def rank_stories(stories: list[Story], keywords: tuple[str, ...] = ()) -> list[RankedStory]:
     ranked: list[RankedStory] = []
     for cluster in cluster_stories(stories):
         sources = {story.source for story in cluster}
         groups = {story.group for story in cluster}
-        references = len(sources) + (2 if "Aggregator" in groups else 0) + (1 if "Social" in groups else 0)
+        references = (
+            len(sources)
+            + (3 if "Custom" in groups else 0)
+            + (2 if "Aggregator" in groups else 0)
+            + (1 if "Social" in groups else 0)
+        )
         representative = max(
             cluster,
-            key=lambda story: story_score(story, references=references, cluster_size=len(cluster)),
+            key=lambda story: story_score(story, references=references, cluster_size=len(cluster), keywords=keywords),
         )
         tokens = story_tokens(representative)
         ranked.append(
@@ -502,7 +595,7 @@ def rank_stories(stories: list[Story]) -> list[RankedStory]:
                 story=representative,
                 cluster_key=cluster_key_from_tokens(tokens, representative.title),
                 references=references,
-                score=story_score(representative, references=references, cluster_size=len(cluster)),
+                score=story_score(representative, references=references, cluster_size=len(cluster), keywords=keywords),
             )
         )
 
@@ -686,10 +779,16 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
     with st.container(border=True):
         meta = f"{story.group} / {story_age(story)} / referenced {ranked_story.references}x"
         st.markdown(f'<div class="story-meta">{html.escape(meta)}</div>', unsafe_allow_html=True)
-        st.markdown(
-            f'<h2 class="story-title">{html.escape(headline(story.title, max_headline_words))}</h2>',
-            unsafe_allow_html=True,
-        )
+        story_title = f'<h2 class="story-title">{html.escape(headline(story.title, max_headline_words))}</h2>'
+        if story.image_url:
+            title_col, image_col = st.columns([3, 1], vertical_alignment="top")
+            with title_col:
+                st.markdown(story_title, unsafe_allow_html=True)
+            with image_col:
+                image_url = html.escape(story.image_url, quote=True)
+                st.markdown(f'<img class="story-image" src="{image_url}" alt="">', unsafe_allow_html=True)
+        else:
+            st.markdown(story_title, unsafe_allow_html=True)
 
         summary = summarize(story, detail)
         rows = "".join(
@@ -730,8 +829,14 @@ def render_header() -> None:
     )
 
 
-def settings_signature(selected_topics: list[str], include_aggregators: bool, include_social: bool, show_archived: bool) -> tuple:
-    return (tuple(selected_topics), include_aggregators, include_social, show_archived)
+def settings_signature(
+    selected_topics: list[str],
+    include_aggregators: bool,
+    include_social: bool,
+    show_archived: bool,
+    keywords: tuple[str, ...],
+) -> tuple:
+    return (tuple(selected_topics), include_aggregators, include_social, show_archived, keywords)
 
 
 def select_batch(ranked_stories: list[RankedStory], show_archived: bool) -> list[RankedStory]:
@@ -782,6 +887,8 @@ def main() -> None:
     st.session_state.setdefault("include_social", True)
     st.session_state.setdefault("include_aggregators", True)
     st.session_state.setdefault("show_archived", False)
+    for index in range(9):
+        st.session_state.setdefault(f"custom_keyword_{index}", "")
 
     render_header()
 
@@ -791,14 +898,15 @@ def main() -> None:
     include_social = st.session_state.include_social
     include_aggregators = st.session_state.include_aggregators
     show_archived = st.session_state.show_archived
+    keywords = custom_keywords()
 
-    current_settings = settings_signature(selected_topics, include_aggregators, include_social, show_archived)
+    current_settings = settings_signature(selected_topics, include_aggregators, include_social, show_archived, keywords)
     if st.session_state.last_settings != current_settings:
         st.session_state.current_cluster_keys = []
         st.session_state.last_settings = current_settings
 
-    stories, errors = fetch_stories(tuple(selected_topics), include_aggregators, include_social)
-    ranked_stories = rank_stories(stories)
+    stories, errors = fetch_stories(tuple(selected_topics), include_aggregators, include_social, keywords)
+    ranked_stories = rank_stories(stories, keywords)
     batch = select_batch(ranked_stories, show_archived)
 
     if not batch:
@@ -840,6 +948,18 @@ def main() -> None:
                 st.session_state.seen_cluster_keys = set()
                 st.session_state.current_cluster_keys = []
                 st.rerun()
+        st.markdown("Keyword boosters")
+        for row_index in range(3):
+            cols = st.columns(3)
+            for col_index, col in enumerate(cols):
+                keyword_index = (row_index * 3) + col_index
+                with col:
+                    st.text_input(
+                        f"Keyword {keyword_index + 1}",
+                        key=f"custom_keyword_{keyword_index}",
+                        placeholder=f"Keyword {keyword_index + 1}",
+                        label_visibility="collapsed",
+                    )
         st.caption(
             "X is not included yet because the official useful API paths generally require paid access. "
             "Skim can add it later when you want to connect an X developer account."
