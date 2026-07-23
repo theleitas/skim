@@ -188,12 +188,20 @@ def page_style() -> None:
                 margin-bottom: 0.45rem;
             }
 
-            .story h2 {
+            .story-title {
                 font-size: clamp(1.18rem, 2vw, 1.42rem);
                 line-height: 1.22;
-                margin: 0 0 0.78rem 0;
+                margin: 0 0 0.9rem 0;
                 color: var(--skim-ink);
                 max-width: 34rem;
+            }
+
+            .story-source {
+                color: #9d968d;
+                font-size: 0.76rem;
+                font-style: italic;
+                line-height: 1.35;
+                margin-top: 0.75rem;
             }
 
             .summary-grid {
@@ -203,6 +211,10 @@ def page_style() -> None:
                 color: #ebe5da;
                 font-size: 0.95rem;
                 line-height: 1.5;
+                background: #171512;
+                border: 1px solid #373229;
+                border-radius: 8px;
+                padding: 0.85rem 0.9rem;
             }
 
             .summary-grid b {
@@ -210,8 +222,13 @@ def page_style() -> None:
             }
 
             .summary-field {
-                border-top: 1px solid #2e2a25;
-                padding-top: 0.58rem;
+                border-top: 1px solid #332f29;
+                padding-top: 0.62rem;
+            }
+
+            .summary-field:first-child {
+                border-top: 0;
+                padding-top: 0;
             }
 
             .interaction-label {
@@ -222,12 +239,12 @@ def page_style() -> None:
             }
 
             .share-button {
-                border: 1px solid #4a443c;
-                background: #171512;
-                color: #f6f3ed;
+                border: 1px solid #c8c8c8;
+                background: #d8d8d8;
+                color: #111111;
                 border-radius: 6px;
-                padding: 0.4rem 0.62rem;
-                font-size: 0.9rem;
+                padding: 0.32rem 0.56rem;
+                font-size: 0.82rem;
                 cursor: pointer;
                 width: 100%;
             }
@@ -251,17 +268,18 @@ def page_style() -> None:
 
             .stButton > button,
             .stLinkButton > a {
-                background: #171512;
-                border-color: #4a443c;
-                color: #f6f3ed;
+                background: #d8d8d8;
+                border-color: #c8c8c8;
+                color: #111111;
                 border-radius: 6px;
-                min-height: 2.25rem;
+                min-height: 1.95rem;
+                font-size: 0.82rem;
             }
 
             .stButton > button:hover,
             .stLinkButton > a:hover {
                 border-color: var(--skim-accent);
-                color: #ffffff;
+                color: #000000;
             }
 
             [data-testid="stExpander"] {
@@ -611,7 +629,6 @@ def summarize(story: Story, detail: int) -> dict[str, str]:
         happened = clean_headline_source(story.title)
 
     return {
-        "Source": story.source,
         "What happened": excerpt(happened, width=300),
         "Context": context,
         "Why it matters": why,
@@ -646,12 +663,12 @@ def share_component(story: Story) -> None:
         ">Share</button>
         <style>
             .share-button {{
-                border: 1px solid #4a443c;
-                background: #171512;
-                color: #f6f3ed;
+                border: 1px solid #c8c8c8;
+                background: #d8d8d8;
+                color: #111111;
                 border-radius: 6px;
-                padding: 0.45rem 0.62rem;
-                font-size: 0.9rem;
+                padding: 0.32rem 0.56rem;
+                font-size: 0.82rem;
                 cursor: pointer;
                 width: 100%;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -667,9 +684,12 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
     story = ranked_story.story
     archived = story.id in st.session_state.archived
     with st.container(border=True):
-        meta = f"{story.source} / {story.group} / {story_age(story)} / referenced {ranked_story.references}x"
+        meta = f"{story.group} / {story_age(story)} / referenced {ranked_story.references}x"
         st.markdown(f'<div class="story-meta">{html.escape(meta)}</div>', unsafe_allow_html=True)
-        st.markdown(f"<h2>{html.escape(headline(story.title, max_headline_words))}</h2>", unsafe_allow_html=True)
+        st.markdown(
+            f'<h2 class="story-title">{html.escape(headline(story.title, max_headline_words))}</h2>',
+            unsafe_allow_html=True,
+        )
 
         summary = summarize(story, detail)
         rows = "".join(
@@ -678,7 +698,6 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
         )
         st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="interaction-label">Interaction</div>', unsafe_allow_html=True)
         col1, col2, col3 = st.columns([1, 1, 1])
         with col1:
             st.link_button("Full story", story.link, use_container_width=True)
@@ -692,6 +711,8 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
                 st.rerun()
         with col3:
             share_component(story)
+        source = f"Source: {story.source}"
+        st.markdown(f'<div class="story-source">{html.escape(source)}</div>', unsafe_allow_html=True)
 
 
 def render_header() -> None:
@@ -755,31 +776,21 @@ def main() -> None:
         st.session_state.current_cluster_keys = []
     if "last_settings" not in st.session_state:
         st.session_state.last_settings = None
+    st.session_state.setdefault("selected_topics", ["World", "US", "Politics", "Tech", "AI", "Reddit Hot"])
+    st.session_state.setdefault("detail", 3)
+    st.session_state.setdefault("max_headline_words", 13)
+    st.session_state.setdefault("include_social", True)
+    st.session_state.setdefault("include_aggregators", True)
+    st.session_state.setdefault("show_archived", False)
 
     render_header()
 
-    with st.expander("Customize", expanded=False):
-        selected_topics = st.multiselect(
-            "Topics",
-            options=list(TOPICS.keys()),
-            default=["World", "US", "Politics", "Tech", "AI", "Reddit Hot"],
-        )
-        col1, col2 = st.columns(2)
-        with col1:
-            detail = st.slider("Summary depth", min_value=1, max_value=5, value=3, step=1)
-            max_headline_words = st.slider("Headline words", min_value=8, max_value=16, value=13, step=1)
-        with col2:
-            include_social = st.toggle("Reddit and Hacker News", value=True)
-            include_aggregators = st.toggle("Google News aggregators", value=True)
-            show_archived = st.toggle("Show archived stories", value=False)
-            if st.button("Reset seen stories", use_container_width=True):
-                st.session_state.seen_cluster_keys = set()
-                st.session_state.current_cluster_keys = []
-                st.rerun()
-        st.caption(
-            "X is not included yet because the official useful API paths generally require paid access. "
-            "Skim can add it later when you want to connect an X developer account."
-        )
+    selected_topics = st.session_state.selected_topics
+    detail = st.session_state.detail
+    max_headline_words = st.session_state.max_headline_words
+    include_social = st.session_state.include_social
+    include_aggregators = st.session_state.include_aggregators
+    show_archived = st.session_state.show_archived
 
     current_settings = settings_signature(selected_topics, include_aggregators, include_social, show_archived)
     if st.session_state.last_settings != current_settings:
@@ -789,6 +800,14 @@ def main() -> None:
     stories, errors = fetch_stories(tuple(selected_topics), include_aggregators, include_social)
     ranked_stories = rank_stories(stories)
     batch = select_batch(ranked_stories, show_archived)
+
+    if not batch:
+        st.info("No stories matched this setup. Open Customize and broaden the topics or source types.")
+    else:
+        for ranked_story in batch:
+            render_story(ranked_story, detail=detail, max_headline_words=max_headline_words)
+
+    st.divider()
 
     col1, col2, col3 = st.columns([1, 1, 1])
     col1.metric("Stories", len(batch))
@@ -803,12 +822,28 @@ def main() -> None:
             for error in errors[:12]:
                 st.write(error)
 
-    if not batch:
-        st.info("No stories matched this setup. Open Customize and broaden the topics or source types.")
-        return
-
-    for ranked_story in batch:
-        render_story(ranked_story, detail=detail, max_headline_words=max_headline_words)
+    with st.expander("Customize", expanded=False):
+        st.multiselect(
+            "Topics",
+            options=list(TOPICS.keys()),
+            key="selected_topics",
+        )
+        col1, col2 = st.columns(2)
+        with col1:
+            st.slider("Summary depth", min_value=1, max_value=5, step=1, key="detail")
+            st.slider("Headline words", min_value=8, max_value=16, step=1, key="max_headline_words")
+        with col2:
+            st.toggle("Reddit and Hacker News", key="include_social")
+            st.toggle("Google News aggregators", key="include_aggregators")
+            st.toggle("Show archived stories", key="show_archived")
+            if st.button("Reset seen stories", use_container_width=True):
+                st.session_state.seen_cluster_keys = set()
+                st.session_state.current_cluster_keys = []
+                st.rerun()
+        st.caption(
+            "X is not included yet because the official useful API paths generally require paid access. "
+            "Skim can add it later when you want to connect an X developer account."
+        )
 
     st.markdown(
         """
