@@ -255,12 +255,23 @@ def page_style() -> None:
             }
 
             .lesson-link {
+                display: inline-flex;
+                align-items: center;
+                border: 1px solid #5a554d;
+                border-radius: 999px;
+                background: #2a2927;
                 color: #f1c45b;
+                padding: 0.16rem 0.5rem;
+                margin: 0.12rem 0.16rem 0.12rem 0;
                 text-decoration: none;
+                white-space: nowrap;
+                box-shadow: 0 0 8px rgba(210, 210, 210, 0.08);
             }
 
             .lesson-link:hover {
-                text-decoration: underline;
+                border-color: #80776a;
+                background: #34322f;
+                text-decoration: none;
             }
 
             .interaction-label {
@@ -275,10 +286,13 @@ def page_style() -> None:
                 background: #d8d8d8;
                 color: #111111;
                 border-radius: 6px;
-                padding: 0.32rem 0.56rem;
-                font-size: 0.82rem;
+                padding: 0;
+                font-size: 0.78rem;
                 cursor: pointer;
                 width: 100%;
+                min-height: 2.15rem;
+                line-height: 1;
+                box-shadow: 0 0 13px rgba(210, 210, 210, 0.22);
             }
 
             .share-button:hover {
@@ -304,8 +318,15 @@ def page_style() -> None:
                 border-color: #c8c8c8;
                 color: #111111;
                 border-radius: 6px;
-                min-height: 1.95rem;
-                font-size: 0.82rem;
+                min-height: 2.15rem;
+                height: 2.15rem;
+                line-height: 1;
+                font-size: 0.78rem;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                box-shadow: 0 0 13px rgba(210, 210, 210, 0.22);
+                white-space: nowrap;
             }
 
             .stButton > button:hover,
@@ -683,6 +704,10 @@ def split_sentences(text: str) -> list[str]:
     return [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
 
 
+def sentence_count(text: str) -> int:
+    return len(split_sentences(text))
+
+
 def is_weak_summary(text: str) -> bool:
     normalized = clean_text(text).lower().strip(" .:-")
     if not normalized:
@@ -705,18 +730,34 @@ def is_weak_summary(text: str) -> bool:
 def happened_summary(story: Story, detail: int) -> str:
     title_summary = clean_headline_source(story.title)
     if story.group == "Aggregator":
-        return excerpt(title_summary, width=300)
+        return (
+            f"{excerpt(title_summary, width=220)} "
+            f"The key fact is that multiple outlets or feeds are giving this subject attention right now. "
+            f"Read the full story to separate the confirmed details from the fast-moving headline framing."
+        )
 
     useful_sentences = [sentence for sentence in split_sentences(story.summary_text) if not is_weak_summary(sentence)]
     if not useful_sentences:
-        return excerpt(title_summary, width=300)
+        return (
+            f"{excerpt(title_summary, width=220)} "
+            f"The feed did not provide a strong summary, so the headline is the clearest confirmed signal. "
+            f"Use the full story link for names, dates, quotes, and details before treating the item as settled."
+        )
 
-    happened = useful_sentences[0]
-    if detail >= 4 and len(useful_sentences) > 1:
-        happened = f"{happened} {useful_sentences[1]}"
+    happened_sentences = useful_sentences[:3]
+    while len(happened_sentences) < 3:
+        if len(happened_sentences) == 1:
+            happened_sentences.append(
+                "The immediate importance is that the event has broken through enough to be surfaced by a major feed."
+            )
+        else:
+            happened_sentences.append(
+                "The full story will matter for the specific people, institutions, and decisions behind the headline."
+            )
+    happened = " ".join(happened_sentences)
     if is_weak_summary(happened):
         happened = title_summary
-    return excerpt(happened, width=300)
+    return excerpt(happened, width=620)
 
 
 def infer_topics(story: Story) -> tuple[str, ...]:
@@ -957,7 +998,7 @@ def context_text(story: Story, topics: tuple[str, ...]) -> str:
 
 def summarize(story: Story, detail: int) -> dict[str, str]:
     topics = infer_topics(story)
-    links = " / ".join(f"[{label}]({url})" for label, url in wikipedia_links(story, topics))
+    links = learning_links_text(wikipedia_links(story, topics))
 
     return {
         "": happened_summary(story, detail),
@@ -1157,15 +1198,16 @@ def ai_summary_cached(
     instructions = """
     You are Skim, a sharp personal news analyst. Use only the provided headline, source,
     RSS summary, topic labels, and URL; do not invent facts. Return valid JSON with:
-    summary, context, lesson, and links. summary is one brief plain-English explanation
-    of what happened, never the word "comments". context is one thoughtful paragraph
+    summary, context, lesson, and links. summary is at least three sentences explaining
+    what happened in plain English, never the word "comments", and never just a headline.
+    context is one thoughtful paragraph
     about the larger system, historical pattern, likely follow-on effects, and why this
     event is a signal. lesson is a succinct thing to know, understand, or research next.
     links is exactly three objects with label and url fields. Choose specific,
     educational, story-relevant links, preferably Wikipedia pages for the central entity,
     conflict, institution, technology, geography, or historical pattern.
     """
-    return ai_json(provider, model, instructions, prompt, effort="low", max_output_tokens=900)
+    return ai_json(provider, model, instructions, prompt, effort="low", max_output_tokens=1300)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -1234,7 +1276,30 @@ def coerce_learning_links(raw_links: object, fallback_links: tuple[tuple[str, st
 
 
 def learning_links_text(links: tuple[tuple[str, str], ...]) -> str:
-    return " / ".join(f"[{label}]({url})" for label, url in links)
+    return " ".join(f"[{label}]({url})" for label, url in links)
+
+
+def ensure_three_sentence_summary(summary: str, story: Story, detail: int) -> str:
+    if sentence_count(summary) >= 3 and not is_weak_summary(summary):
+        return summary
+
+    fallback_sentences = split_sentences(happened_summary(story, detail))
+    summary_sentences = [sentence for sentence in split_sentences(summary) if not is_weak_summary(sentence)]
+    combined: list[str] = []
+    for sentence in [*summary_sentences, *fallback_sentences]:
+        if sentence and sentence not in combined:
+            combined.append(sentence)
+        if len(combined) == 3:
+            break
+
+    while len(combined) < 3:
+        if len(combined) == 0:
+            combined.append(excerpt(clean_headline_source(story.title), width=220))
+        elif len(combined) == 1:
+            combined.append("The story is important enough to watch because it has surfaced across a live news feed.")
+        else:
+            combined.append("The full article should clarify the specific facts, timeline, and people involved.")
+    return " ".join(combined)
 
 
 def smart_summarize(story: Story, detail: int) -> dict[str, str]:
@@ -1264,8 +1329,7 @@ def smart_summarize(story: Story, detail: int) -> dict[str, str]:
     context = clean_text(str(ai_result.get("context", "")))
     lesson = clean_text(str(ai_result.get("lesson", "")))
     links = learning_links_text(coerce_learning_links(ai_result.get("links"), fallback_links))
-    if not summary or is_weak_summary(summary):
-        summary = happened_summary(story, detail)
+    summary = ensure_three_sentence_summary(summary, story, detail)
     if not context:
         context = context_text(story, topics)
     if not lesson:
@@ -1343,16 +1407,20 @@ def share_component(story: Story) -> None:
                 background: #d8d8d8;
                 color: #111111;
                 border-radius: 6px;
-                padding: 0.32rem 0.56rem;
-                font-size: 0.82rem;
+                padding: 0;
+                font-size: 0.78rem;
                 cursor: pointer;
                 width: 100%;
+                min-height: 2.15rem;
+                height: 2.15rem;
+                line-height: 1;
+                box-shadow: 0 0 13px rgba(210, 210, 210, 0.22);
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             }}
             .share-button:hover {{ border-color: #f1c45b; }}
         </style>
         """,
-        height=45,
+        height=38,
     )
 
 
@@ -1361,14 +1429,15 @@ def render_summary_value(value: str) -> str:
     rendered = []
     cursor = 0
     for match in link_pattern.finditer(value):
-        rendered.append(html.escape(value[cursor : match.start()]))
+        lead_text = value[cursor : match.start()].replace(" / ", " ")
+        rendered.append(html.escape(lead_text))
         label = html.escape(match.group(1))
         url = html.escape(match.group(2), quote=True)
         rendered.append(
             f'<a class="lesson-link" href="{url}" target="_blank" rel="noopener noreferrer">{label}</a>'
         )
         cursor = match.end()
-    rendered.append(html.escape(value[cursor:]))
+    rendered.append(html.escape(value[cursor:].replace(" / ", " ")))
     return "".join(rendered)
 
 
@@ -1400,7 +1469,7 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
             rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
         st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
 
-        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 1], gap="small", vertical_alignment="top")
         with col1:
             st.link_button("Full story", story.link, use_container_width=True)
         with col2:
@@ -1414,7 +1483,7 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
         with col3:
             share_component(story)
         with col4:
-            if st.button("Deeper analysis", key=f"deep-{story.id}", use_container_width=True):
+            if st.button("Deep analysis", key=f"deep-{story.id}", use_container_width=True):
                 with st.spinner("Building the deeper read..."):
                     try:
                         st.session_state.deep_analyses[story.id] = deeper_analysis(story)
