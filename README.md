@@ -8,42 +8,45 @@ Skim is a personal Streamlit news app built around fast headlines, compact summa
 python3 -m streamlit run app.py
 ```
 
-## Optional free AI setup
+## OpenAI setup
 
-Skim runs without any AI API key, but the best free hosted path is Gemini:
+Skim runs without any AI API key, but OpenAI is the preferred hosted AI path:
 
-- Gemini Flash writes the normal story summary, context, lesson, and learning links.
-- Gemini Pro runs only when you click a story's Deeper analysis button.
-- AI responses are cached for 24 hours so normal refreshes do not re-request the same story analysis.
+- GPT-5.6 Luna writes the normal story summary, Background, lesson, and learning links.
+- GPT-5.6 Terra runs only when you click a story's Deep analysis button.
+- Article summaries regenerate for each new 20-story refresh so Background stays fresh; repeated reruns of the same batch reuse cached results.
 
-Create a Gemini API key in Google AI Studio, then set it before starting Streamlit locally:
+Create an OpenAI API key, then set it before starting Streamlit locally:
 
 ```bash
-export GEMINI_API_KEY="your_gemini_key_here"
+export OPENAI_API_KEY="your_openai_key_here"
 python3 -m streamlit run app.py
 ```
 
 On Streamlit Community Cloud, open the app settings, add this to Secrets, and reboot the app:
 
 ```toml
-GEMINI_API_KEY = "your_gemini_key_here"
+OPENAI_API_KEY = "your_openai_key_here"
+SKIM_AI_PROVIDER = "openai"
 ```
 
 Do not put API keys in GitHub.
 
-Skim's auto provider order is Gemini, Groq, xAI, then OpenAI. You can force one provider with:
+Skim's auto provider order is OpenAI, Gemini, Groq, then xAI. You can force OpenAI with:
 
 ```toml
-SKIM_AI_PROVIDER = "gemini"
+SKIM_AI_PROVIDER = "openai"
 ```
 
-Optional alternate keys:
+Optional fallback keys:
 
 ```toml
+GEMINI_API_KEY = "your_gemini_key_here"
 GROQ_API_KEY = "your_groq_key_here"
 XAI_API_KEY = "your_xai_key_here"
-OPENAI_API_KEY = "your_openai_key_here"
 ```
+
+OpenAI cost estimates are shown on each article card when OpenAI is active. They are estimates, not exact billing records.
 
 ## Tokens
 

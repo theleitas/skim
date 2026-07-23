@@ -27,13 +27,19 @@ MIN_NEW_SUMMARY_TERMS = 7
 NO_REPEAT_HOURS = 48
 OPENAI_SUMMARY_MODEL = "gpt-5.6-luna"
 OPENAI_DEEP_MODEL = "gpt-5.6-terra"
-AI_SUMMARY_PROMPT_VERSION = "context-specific-v2"
+AI_SUMMARY_PROMPT_VERSION = "background-specific-v3"
 GEMINI_SUMMARY_MODEL = "gemini-2.5-flash"
 GEMINI_DEEP_MODEL = "gemini-2.5-pro"
 GROQ_SUMMARY_MODEL = "llama-3.3-70b-versatile"
 GROQ_DEEP_MODEL = "llama-3.3-70b-versatile"
 XAI_SUMMARY_MODEL = "grok-4.20-0309-non-reasoning"
 XAI_DEEP_MODEL = "grok-4.5"
+OPENAI_MODEL_PRICES_PER_MTOK = {
+    "gpt-5.6-luna": (1.00, 6.00),
+    "gpt-5.6-terra": (2.50, 15.00),
+    "gpt-5.6-sol": (5.00, 30.00),
+    "gpt-5.6": (5.00, 30.00),
+}
 REQUEST_HEADERS = {
     "User-Agent": "SkimPersonalNews/0.1 (+https://github.com/theleitas)",
 }
@@ -206,9 +212,9 @@ def page_style() -> None:
             }
 
             .story-title {
-                font-size: clamp(1.02rem, 1.7vw, 1.24rem);
-                line-height: 1.42;
-                margin: 0 0 1.2rem 0;
+                font-size: clamp(0.92rem, 1.45vw, 1.08rem);
+                line-height: 1.46;
+                margin: 0 0 0.95rem 0;
                 color: var(--skim-ink);
                 max-width: 34rem;
                 display: -webkit-box;
@@ -270,17 +276,17 @@ def page_style() -> None:
             .lesson-link {
                 display: inline-flex;
                 align-items: center;
-                border: 1px solid #5a554d;
+                border: 1px solid #6b613d;
                 border-radius: 999px;
-                background: #2a2927;
-                color: #f1c45b;
+                background: #1e1b12;
+                color: #f7d66e;
                 padding: 0.1rem 0.38rem;
                 margin: 0.08rem 0.12rem 0.08rem 0;
                 font-size: 0.72rem;
                 line-height: 1.15;
                 text-decoration: none;
                 white-space: nowrap;
-                box-shadow: 0 0 8px rgba(210, 210, 210, 0.08);
+                box-shadow: none;
             }
 
             .learn-more-row {
@@ -300,9 +306,18 @@ def page_style() -> None:
             }
 
             .lesson-link:hover {
-                border-color: #80776a;
-                background: #34322f;
+                border-color: #f1c45b;
+                background: #262111;
+                color: #ffe58c;
                 text-decoration: none;
+            }
+
+            .story-ai-cost {
+                color: #8f887e;
+                font-size: 0.7rem;
+                line-height: 1.3;
+                margin-top: -0.45rem;
+                margin-bottom: 0.72rem;
             }
 
             .interaction-label {
@@ -1243,7 +1258,7 @@ def summarize(story: Story, detail: int) -> dict[str, str]:
 
     return {
         "": happened_summary(story, detail),
-        "Context": context_text(story, topics),
+        "Background": context_text(story, topics),
         "Lesson": f"{lesson_text(story, topics)} Learn more: {links}",
     }
 
@@ -1266,15 +1281,15 @@ def openai_is_configured() -> bool:
 
 def configured_ai_provider() -> str:
     available = {
+        "openai": bool(secret_or_env("OPENAI_API_KEY")),
         "gemini": bool(secret_or_env("GEMINI_API_KEY")),
         "groq": bool(secret_or_env("GROQ_API_KEY")),
         "xai": bool(secret_or_env("XAI_API_KEY")),
-        "openai": bool(secret_or_env("OPENAI_API_KEY")),
     }
     requested = secret_or_env("SKIM_AI_PROVIDER").lower()
     if requested in available and available[requested]:
         return requested
-    for provider in ("gemini", "groq", "xai", "openai"):
+    for provider in ("openai", "gemini", "groq", "xai"):
         if available[provider]:
             return provider
     return ""
@@ -1285,7 +1300,7 @@ def ai_provider_label() -> str:
         "gemini": "Gemini free tier",
         "groq": "Groq free tier",
         "xai": "xAI Grok",
-        "openai": "OpenAI Luna + Terra",
+        "openai": "OpenAI GPT-5.6",
     }
     return labels.get(configured_ai_provider(), "Free feeds / local summaries")
 
@@ -1303,6 +1318,54 @@ def ai_model(provider: str, deep: bool) -> str:
     }
     env_name = f"SKIM_{provider.upper()}_{'DEEP' if deep else 'SUMMARY'}_MODEL"
     return secret_or_env(env_name) or default_models[(provider, deep)]
+
+
+def estimated_token_count(*parts: str, overhead_tokens: int = 0) -> int:
+    text = " ".join(clean_text(part) for part in parts if part)
+    return max(1, int(len(text) / 4) + overhead_tokens)
+
+
+def openai_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    prices = OPENAI_MODEL_PRICES_PER_MTOK.get(model)
+    if not prices:
+        return None
+    input_price, output_price = prices
+    return ((input_tokens / 1_000_000) * input_price) + ((output_tokens / 1_000_000) * output_price)
+
+
+def format_cost(value: float) -> str:
+    if value < 0.01:
+        return f"${value:.4f}"
+    return f"${value:.2f}"
+
+
+def openai_cost_note(story: Story, research_text: str) -> str:
+    if configured_ai_provider() != "openai":
+        return ""
+
+    summary_model = ai_model("openai", deep=False)
+    summary_input_tokens = estimated_token_count(
+        story.title,
+        story.summary_text,
+        research_text,
+        overhead_tokens=650,
+    )
+    summary_output_tokens = 650
+    summary_cost = openai_cost(summary_model, summary_input_tokens, summary_output_tokens)
+    if summary_cost is None:
+        return ""
+
+    deep_model = ai_model("openai", deep=True)
+    deep_input_tokens = estimated_token_count(
+        story.title,
+        story.summary_text,
+        research_text,
+        overhead_tokens=520,
+    )
+    deep_output_tokens = 700
+    deep_cost = openai_cost(deep_model, deep_input_tokens, deep_output_tokens)
+    deep_note = f" · deep if clicked ~{format_cost(deep_cost)}" if deep_cost is not None else ""
+    return f"AI estimate: article ~{format_cost(summary_cost)}{deep_note}"
 
 
 def parse_openai_json(raw_text: str) -> dict:
@@ -1447,15 +1510,15 @@ def ai_summary_cached(
     You are Skim, a sharp personal news analyst. Use the provided headline, source,
     RSS summary, URL, topic labels, and refresh-time research notes; do not invent facts.
     Return valid JSON with:
-    summary, context, lesson, and links. summary is at least three sentences explaining
+    summary, background, lesson, and links. summary is at least three sentences explaining
     what happened in plain English, never the word "comments", and never just a headline.
-    context is one thoughtful paragraph about this exact story's larger system,
-    historical pattern, likely follow-on effects, and why this event is a signal. Use
-    the research notes to add specificity when they are available. Do not use generic
-    reusable context. Name or clearly refer to the story's central subject, place,
-    institution, company, disease, technology, market, or conflict. Explain what the
-    story could trigger next and what larger change or stress it may reveal. lesson is
-    a succinct thing to know, understand, or research next.
+    background is one smart, specific paragraph that teaches the backstory and perspective
+    behind this exact story: why it is important, what history or prior tension makes it
+    news, who has leverage, what could happen next, and what larger stress or change it
+    may reveal. Use the research notes to add specificity when they are available. Do not
+    use generic reusable background. Name or clearly refer to the story's central subject,
+    place, institution, company, disease, technology, market, or conflict. lesson is a
+    succinct thing to know, understand, or research next.
     links is exactly three objects with label and url fields. The first two links must
     be useful non-Wikipedia references tied to the story, such as source pages,
     official institutions, data/background pages, reputable topic hubs, or related
@@ -1592,14 +1655,14 @@ def ensure_three_sentence_summary(summary: str, story: Story, detail: int) -> st
     return " ".join(combined)
 
 
-def smart_summarize(story: Story, detail: int, refresh_key: str) -> dict[str, str]:
+def smart_summarize(story: Story, detail: int, refresh_key: str, research_text: str = "") -> dict[str, str]:
     provider = configured_ai_provider()
     if not provider:
         return summarize(story, detail)
 
     topics = infer_topics(story)
     fallback_links = story_learning_links(story, topics)
-    gathered_research = research_notes(story, topics)
+    gathered_research = research_text or research_notes(story, topics)
     try:
         ai_result = ai_summary_cached(
             provider,
@@ -1620,18 +1683,19 @@ def smart_summarize(story: Story, detail: int, refresh_key: str) -> dict[str, st
         return summarize(story, detail)
 
     summary = clean_text(strip_markdown_links(str(ai_result.get("summary", ""))))
-    context = clean_text(strip_markdown_links(str(ai_result.get("context", ""))))
+    background_value = ai_result.get("background") or ai_result.get("context", "")
+    background = clean_text(strip_markdown_links(str(background_value)))
     lesson = clean_text(strip_markdown_links(str(ai_result.get("lesson", ""))))
     links = learning_links_text(coerce_learning_links(ai_result.get("links"), fallback_links))
     summary = ensure_three_sentence_summary(summary, story, detail)
-    if context_is_too_generic(context, story):
-        context = context_text(story, topics)
+    if context_is_too_generic(background, story):
+        background = context_text(story, topics)
     if not lesson:
         lesson = lesson_text(story, topics)
 
     return {
         "": summary,
-        "Context": context,
+        "Background": background,
         "Lesson": f"{lesson} Learn more: {links}",
     }
 
@@ -1755,12 +1819,18 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
             story_title = f'<h2 class="story-title story-title-full">{story_title_text}</h2>'
             st.markdown(story_title, unsafe_allow_html=True)
 
-        summary = smart_summarize(story, detail, refresh_key)
+        topics = infer_topics(story)
+        provider = configured_ai_provider()
+        gathered_research = research_notes(story, topics) if provider else ""
+        summary = smart_summarize(story, detail, refresh_key, gathered_research)
         rows = ""
         for label, value in summary.items():
             label_html = f"<b>{html.escape(label)}:</b> " if label else ""
             rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
         st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
+        cost_note = openai_cost_note(story, gathered_research)
+        if cost_note:
+            st.markdown(f'<div class="story-ai-cost">{html.escape(cost_note)}</div>', unsafe_allow_html=True)
 
         col1, col2, col3, col4 = st.columns([1, 1, 1, 1], gap="small", vertical_alignment="top")
         with col1:
