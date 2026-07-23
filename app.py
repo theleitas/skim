@@ -48,6 +48,7 @@ class RankedStory:
     story: Story
     cluster_key: str
     references: int
+    topic_story_count: int
     score: float
 
 
@@ -604,6 +605,7 @@ def rank_stories(stories: list[Story], keywords: tuple[str, ...] = ()) -> list[R
                 story=representative,
                 cluster_key=cluster_key_from_tokens(tokens, representative.title),
                 references=references,
+                topic_story_count=len(cluster),
                 score=story_score(representative, references=references, cluster_size=len(cluster), keywords=keywords),
             )
         )
@@ -933,7 +935,11 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
     story = ranked_story.story
     archived = story.id in st.session_state.archived
     with st.container(border=True):
-        meta = f"{story.group} / {story_age(story)} / referenced {ranked_story.references}x"
+        story_word = "story" if ranked_story.topic_story_count == 1 else "stories"
+        meta = (
+            f"{story.group} / {story_age(story)} / reference score {ranked_story.references}x / "
+            f"{ranked_story.topic_story_count} {story_word} on this topic"
+        )
         st.markdown(f'<div class="story-meta">{html.escape(meta)}</div>', unsafe_allow_html=True)
         story_title = f'<h2 class="story-title">{html.escape(headline(story.title, max_headline_words))}</h2>'
         if story.image_url:
