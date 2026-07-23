@@ -650,6 +650,19 @@ def fetch_stories(
     return stories, errors
 
 
+def fetch_keyword_rankings(custom_keywords: tuple[str, ...]) -> tuple[dict[str, list[RankedStory]], list[str]]:
+    keyword_rankings: dict[str, list[RankedStory]] = {}
+    errors: list[str] = []
+
+    for keyword in custom_keywords:
+        source_stories, error = fetch_source(keyword_news_source(keyword))
+        keyword_rankings[keyword] = rank_stories(source_stories, (keyword,))
+        if error:
+            errors.append(error)
+
+    return keyword_rankings, errors
+
+
 def cluster_stories(stories: list[Story]) -> list[list[Story]]:
     clusters: list[list[Story]] = []
     cluster_tokens: list[set[str]] = []
@@ -1971,26 +1984,65 @@ def render_batch_timestamp(batch_size: int) -> None:
     st.caption(f"{batch_size} {story_word} refreshed: {label} · No repeats for {NO_REPEAT_HOURS} hours")
 
 
-def select_batch(ranked_stories: list[RankedStory], show_archived: bool) -> list[RankedStory]:
+def ranked_item_is_available(item: RankedStory, show_archived: bool, blocked_cluster_keys: set[str]) -> bool:
+    return (
+        item.cluster_key not in blocked_cluster_keys
+        and (show_archived or item.story.id not in st.session_state.archived)
+    )
+
+
+def current_batch_from_keys(
+    ranked_stories: list[RankedStory],
+    keyword_rankings: dict[str, list[RankedStory]],
+    show_archived: bool,
+) -> list[RankedStory]:
+    current_cluster_keys = st.session_state.current_cluster_keys
+    if not current_cluster_keys:
+        return []
+
+    available_by_key: dict[str, RankedStory] = {}
+    for item in ranked_stories:
+        available_by_key.setdefault(item.cluster_key, item)
+    for keyword_items in keyword_rankings.values():
+        for item in keyword_items:
+            available_by_key.setdefault(item.cluster_key, item)
+
+    current: list[RankedStory] = []
+    for cluster_key in current_cluster_keys:
+        item = available_by_key.get(cluster_key)
+        if item and ranked_item_is_available(item, show_archived, set()):
+            current.append(item)
+    return current
+
+
+def select_batch(
+    ranked_stories: list[RankedStory],
+    keyword_rankings: dict[str, list[RankedStory]],
+    show_archived: bool,
+) -> list[RankedStory]:
     prune_shown_cluster_history()
     shown_cluster_keys = set(st.session_state.shown_cluster_history)
-    current_cluster_keys = st.session_state.current_cluster_keys
+    current = current_batch_from_keys(ranked_stories, keyword_rankings, show_archived)
+    if current:
+        return current
 
-    if current_cluster_keys:
-        current = [item for item in ranked_stories if item.cluster_key in current_cluster_keys]
-        if not show_archived:
-            current = [item for item in current if item.story.id not in st.session_state.archived]
-        if current:
-            return current[:BATCH_SIZE]
+    batch: list[RankedStory] = []
+    used_cluster_keys: set[str] = set()
 
-    fresh = [
-        item
-        for item in ranked_stories
-        if item.cluster_key not in shown_cluster_keys
-        and (show_archived or item.story.id not in st.session_state.archived)
-    ]
+    for item in ranked_stories:
+        if len(batch) >= BATCH_SIZE:
+            break
+        if ranked_item_is_available(item, show_archived, shown_cluster_keys | used_cluster_keys):
+            batch.append(item)
+            used_cluster_keys.add(item.cluster_key)
 
-    batch = fresh[:BATCH_SIZE]
+    for keyword in keyword_rankings:
+        for item in keyword_rankings[keyword]:
+            if ranked_item_is_available(item, show_archived, shown_cluster_keys | used_cluster_keys):
+                batch.append(item)
+                used_cluster_keys.add(item.cluster_key)
+                break
+
     st.session_state.current_cluster_keys = [item.cluster_key for item in batch]
     mark_batch_shown(batch)
     return batch
@@ -2041,9 +2093,11 @@ def main() -> None:
         st.session_state.last_settings = current_settings
 
     with st.spinner("Building a stronger story list..."):
-        stories, errors = fetch_stories(tuple(selected_topics), include_aggregators, include_social, keywords)
+        stories, errors = fetch_stories(tuple(selected_topics), include_aggregators, include_social, ())
         ranked_stories = rank_stories(stories, keywords)
-    batch = select_batch(ranked_stories, show_archived)
+        keyword_rankings, keyword_errors = fetch_keyword_rankings(keywords)
+        errors.extend(keyword_errors)
+    batch = select_batch(ranked_stories, keyword_rankings, show_archived)
     render_batch_timestamp(len(batch))
 
     if not batch:
@@ -2094,6 +2148,7 @@ def main() -> None:
                 st.session_state.current_cluster_keys = []
                 st.rerun()
         st.markdown("Keyword boosters")
+        st.caption("Each saved keyword adds one extra trending article on top of the 15-story main feed.")
         for row_index in range(3):
             cols = st.columns(3)
             for col_index, col in enumerate(cols):
