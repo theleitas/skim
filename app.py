@@ -24,6 +24,12 @@ ITEMS_PER_SOURCE = 50
 FEED_TIMEOUT_SECONDS = 15
 OPENAI_SUMMARY_MODEL = "gpt-5.6-luna"
 OPENAI_DEEP_MODEL = "gpt-5.6-terra"
+GEMINI_SUMMARY_MODEL = "gemini-2.5-flash"
+GEMINI_DEEP_MODEL = "gemini-2.5-pro"
+GROQ_SUMMARY_MODEL = "llama-3.3-70b-versatile"
+GROQ_DEEP_MODEL = "llama-3.3-70b-versatile"
+XAI_SUMMARY_MODEL = "grok-4.20-0309-non-reasoning"
+XAI_DEEP_MODEL = "grok-4.5"
 REQUEST_HEADERS = {
     "User-Agent": "SkimPersonalNews/0.1 (+https://github.com/theleitas)",
 }
@@ -960,16 +966,61 @@ def summarize(story: Story, detail: int) -> dict[str, str]:
     }
 
 
-def openai_api_key() -> str:
+def secret_or_env(name: str) -> str:
     try:
-        secret_value = st.secrets.get("OPENAI_API_KEY", "")
+        secret_value = st.secrets.get(name, "")
     except Exception:
         secret_value = ""
-    return str(secret_value or os.environ.get("OPENAI_API_KEY", "")).strip()
+    return str(secret_value or os.environ.get(name, "")).strip()
+
+
+def openai_api_key() -> str:
+    return secret_or_env("OPENAI_API_KEY")
 
 
 def openai_is_configured() -> bool:
     return bool(openai_api_key())
+
+
+def configured_ai_provider() -> str:
+    available = {
+        "gemini": bool(secret_or_env("GEMINI_API_KEY")),
+        "groq": bool(secret_or_env("GROQ_API_KEY")),
+        "xai": bool(secret_or_env("XAI_API_KEY")),
+        "openai": bool(secret_or_env("OPENAI_API_KEY")),
+    }
+    requested = secret_or_env("SKIM_AI_PROVIDER").lower()
+    if requested in available and available[requested]:
+        return requested
+    for provider in ("gemini", "groq", "xai", "openai"):
+        if available[provider]:
+            return provider
+    return ""
+
+
+def ai_provider_label() -> str:
+    labels = {
+        "gemini": "Gemini free tier",
+        "groq": "Groq free tier",
+        "xai": "xAI Grok",
+        "openai": "OpenAI Luna + Terra",
+    }
+    return labels.get(configured_ai_provider(), "Free feeds / local summaries")
+
+
+def ai_model(provider: str, deep: bool) -> str:
+    default_models = {
+        ("gemini", False): GEMINI_SUMMARY_MODEL,
+        ("gemini", True): GEMINI_DEEP_MODEL,
+        ("groq", False): GROQ_SUMMARY_MODEL,
+        ("groq", True): GROQ_DEEP_MODEL,
+        ("xai", False): XAI_SUMMARY_MODEL,
+        ("xai", True): XAI_DEEP_MODEL,
+        ("openai", False): OPENAI_SUMMARY_MODEL,
+        ("openai", True): OPENAI_DEEP_MODEL,
+    }
+    env_name = f"SKIM_{provider.upper()}_{'DEEP' if deep else 'SUMMARY'}_MODEL"
+    return secret_or_env(env_name) or default_models[(provider, deep)]
 
 
 def parse_openai_json(raw_text: str) -> dict:
@@ -987,6 +1038,58 @@ def parse_openai_json(raw_text: str) -> dict:
             return {}
 
 
+def post_json(url: str, headers: dict[str, str], payload: dict) -> dict:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={**headers, "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=45) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def gemini_json(model: str, instructions: str, prompt: str, max_output_tokens: int) -> dict:
+    model_path = urllib.parse.quote(model, safe="")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_path}:generateContent"
+    payload = {
+        "systemInstruction": {"parts": [{"text": instructions}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.25,
+            "maxOutputTokens": max_output_tokens,
+        },
+    }
+    response = post_json(url, {"x-goog-api-key": secret_or_env("GEMINI_API_KEY")}, payload)
+    parts = response.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+    raw_text = " ".join(str(part.get("text", "")) for part in parts if isinstance(part, dict))
+    return parse_openai_json(raw_text)
+
+
+def chat_completions_json(
+    url: str,
+    api_key: str,
+    model: str,
+    instructions: str,
+    prompt: str,
+    max_output_tokens: int,
+) -> dict:
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.25,
+        "max_completion_tokens": max_output_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    response = post_json(url, {"Authorization": f"Bearer {api_key}"}, payload)
+    raw_text = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+    return parse_openai_json(raw_text)
+
+
 def openai_json(model: str, instructions: str, prompt: str, effort: str, max_output_tokens: int) -> dict:
     from openai import OpenAI
 
@@ -1002,8 +1105,34 @@ def openai_json(model: str, instructions: str, prompt: str, effort: str, max_out
     return parse_openai_json(getattr(response, "output_text", ""))
 
 
+def ai_json(provider: str, model: str, instructions: str, prompt: str, effort: str, max_output_tokens: int) -> dict:
+    if provider == "gemini":
+        return gemini_json(model, instructions, prompt, max_output_tokens)
+    if provider == "groq":
+        return chat_completions_json(
+            "https://api.groq.com/openai/v1/chat/completions",
+            secret_or_env("GROQ_API_KEY"),
+            model,
+            instructions,
+            prompt,
+            max_output_tokens,
+        )
+    if provider == "xai":
+        return chat_completions_json(
+            "https://api.x.ai/v1/chat/completions",
+            secret_or_env("XAI_API_KEY"),
+            model,
+            instructions,
+            prompt,
+            max_output_tokens,
+        )
+    return openai_json(model, instructions, prompt, effort, max_output_tokens)
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
-def openai_summary_cached(
+def ai_summary_cached(
+    provider: str,
+    model: str,
     story_id: str,
     title: str,
     source: str,
@@ -1036,11 +1165,13 @@ def openai_summary_cached(
     educational, story-relevant links, preferably Wikipedia pages for the central entity,
     conflict, institution, technology, geography, or historical pattern.
     """
-    return openai_json(OPENAI_SUMMARY_MODEL, instructions, prompt, effort="low", max_output_tokens=900)
+    return ai_json(provider, model, instructions, prompt, effort="low", max_output_tokens=900)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def openai_deep_analysis_cached(
+def ai_deep_analysis_cached(
+    provider: str,
+    model: str,
     story_id: str,
     title: str,
     source: str,
@@ -1071,7 +1202,7 @@ def openai_deep_analysis_cached(
     next. links is exactly three objects with label and url fields, chosen for specific
     learning value and preferably from Wikipedia.
     """
-    return openai_json(OPENAI_DEEP_MODEL, instructions, prompt, effort="medium", max_output_tokens=1200)
+    return ai_json(provider, model, instructions, prompt, effort="medium", max_output_tokens=1200)
 
 
 def coerce_learning_links(raw_links: object, fallback_links: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
@@ -1107,13 +1238,16 @@ def learning_links_text(links: tuple[tuple[str, str], ...]) -> str:
 
 
 def smart_summarize(story: Story, detail: int) -> dict[str, str]:
-    if not openai_is_configured():
+    provider = configured_ai_provider()
+    if not provider:
         return summarize(story, detail)
 
     topics = infer_topics(story)
     fallback_links = wikipedia_links(story, topics)
     try:
-        ai_result = openai_summary_cached(
+        ai_result = ai_summary_cached(
+            provider,
+            ai_model(provider, deep=False),
             story.id,
             story.title,
             story.source,
@@ -1147,13 +1281,16 @@ def smart_summarize(story: Story, detail: int) -> dict[str, str]:
 def deeper_analysis(story: Story) -> dict[str, str]:
     topics = infer_topics(story)
     fallback_links = wikipedia_links(story, topics)
-    if not openai_is_configured():
+    provider = configured_ai_provider()
+    if not provider:
         return {
-            "Deeper analysis": "Add an OPENAI_API_KEY in Streamlit secrets to enable Terra analysis for this story.",
+            "Deeper analysis": "Add GEMINI_API_KEY in Streamlit secrets to enable free AI deeper analysis for this story.",
             "Research trail": f"Learn more: {learning_links_text(fallback_links)}",
         }
 
-    ai_result = openai_deep_analysis_cached(
+    ai_result = ai_deep_analysis_cached(
+        provider,
+        ai_model(provider, deep=True),
         story.id,
         story.title,
         story.source,
@@ -1278,12 +1415,12 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
             share_component(story)
         with col4:
             if st.button("Deeper analysis", key=f"deep-{story.id}", use_container_width=True):
-                with st.spinner("Terra is building the deeper read..."):
+                with st.spinner("Building the deeper read..."):
                     try:
                         st.session_state.deep_analyses[story.id] = deeper_analysis(story)
                     except Exception as exc:
                         st.session_state.deep_analyses[story.id] = {
-                            "Deeper analysis": f"Terra could not complete this request: {exc}"
+                            "Deeper analysis": f"The AI provider could not complete this request: {exc}"
                         }
 
         if story.id in st.session_state.deep_analyses:
@@ -1305,7 +1442,7 @@ def render_header() -> None:
                 <div class="skim-brand">{APP_NAME}</div>
                 <div class="skim-tagline">Fast personal news, trimmed to what matters.</div>
             </div>
-            <div class="skim-pill">{"OpenAI Luna + Terra" if openai_is_configured() else "Free feeds / local summaries"}</div>
+            <div class="skim-pill">{html.escape(ai_provider_label())}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1457,8 +1594,8 @@ def main() -> None:
     st.markdown(
         """
         <p class="skim-footnote">
-            Skim uses public RSS feeds. Add OPENAI_API_KEY in Streamlit secrets to turn on
-            Luna summaries and Terra deeper analysis; without it, Skim falls back to local summaries.
+            Skim uses public RSS feeds. Add GEMINI_API_KEY in Streamlit secrets for the best free AI path;
+            Groq, xAI, and OpenAI keys are optional fallbacks. Without an AI key, Skim uses local summaries.
         </p>
         """,
         unsafe_allow_html=True,

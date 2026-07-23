@@ -8,32 +8,46 @@ Skim is a personal Streamlit news app built around fast headlines, compact summa
 python3 -m streamlit run app.py
 ```
 
-## Optional OpenAI setup
+## Optional free AI setup
 
-Skim runs without OpenAI, but it can use your OpenAI API account for smarter summaries:
+Skim runs without any AI API key, but the best free hosted path is Gemini:
 
-- Luna (`gpt-5.6-luna`) writes the normal story summary, context, lesson, and learning links.
-- Terra (`gpt-5.6-terra`) runs only when you click a story's Deeper analysis button.
-- OpenAI responses are cached for 24 hours so normal refreshes do not rebill the same story analysis.
+- Gemini Flash writes the normal story summary, context, lesson, and learning links.
+- Gemini Pro runs only when you click a story's Deeper analysis button.
+- AI responses are cached for 24 hours so normal refreshes do not re-request the same story analysis.
 
-Locally, set the key before starting Streamlit:
+Create a Gemini API key in Google AI Studio, then set it before starting Streamlit locally:
 
 ```bash
-export OPENAI_API_KEY="your_api_key_here"
+export GEMINI_API_KEY="your_gemini_key_here"
 python3 -m streamlit run app.py
 ```
 
 On Streamlit Community Cloud, open the app settings, add this to Secrets, and reboot the app:
 
 ```toml
-OPENAI_API_KEY = "your_api_key_here"
+GEMINI_API_KEY = "your_gemini_key_here"
 ```
 
-Do not put your API key in GitHub. API usage is charged to the OpenAI account/project that owns the key.
+Do not put API keys in GitHub.
+
+Skim's auto provider order is Gemini, Groq, xAI, then OpenAI. You can force one provider with:
+
+```toml
+SKIM_AI_PROVIDER = "gemini"
+```
+
+Optional alternate keys:
+
+```toml
+GROQ_API_KEY = "your_groq_key_here"
+XAI_API_KEY = "your_xai_key_here"
+OPENAI_API_KEY = "your_openai_key_here"
+```
 
 ## Tokens
 
-The news sources are still token-free and use public RSS feeds. Without `OPENAI_API_KEY`, Skim uses its local summarizer. X is listed as a future integration because useful official X API access usually requires a developer account and paid access.
+The news sources are token-free and use public RSS feeds. Without an AI key, Skim uses its local summarizer. X is listed as a future integration because useful official X API access usually requires a developer account and paid access.
 
 ## Free sources in this version
 
