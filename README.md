@@ -49,7 +49,16 @@ GROQ_API_KEY = "your_groq_key_here"
 XAI_API_KEY = "your_xai_key_here"
 ```
 
-OpenAI cost estimates are shown on each article card when OpenAI is active. They include a separate note for the optional quality-repair call and are estimates, not exact billing records.
+When OpenAI is active, Skim uses the token usage returned by the API and the current
+model prices to show:
+
+- The estimated AI cost of the latest feed, including repair attempts and candidates that fail the quality gate.
+- A persistent estimated all-time feed cost, starting with the first batch generated after the counter is enabled.
+- The estimated cost of each published card and the likely cost of optional Deep analysis.
+
+The cumulative counter is stored in the app URL alongside persistent keywords, so browser
+refreshes and ordinary Streamlit reruns do not erase it or count the same batch twice. It
+is an app-side estimate, not a replacement for the OpenAI billing dashboard.
 
 ## Tokens
 

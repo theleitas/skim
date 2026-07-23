@@ -41,11 +41,17 @@ GROQ_DEEP_MODEL = "llama-3.3-70b-versatile"
 XAI_SUMMARY_MODEL = "grok-4.20-0309-non-reasoning"
 XAI_DEEP_MODEL = "grok-4.5"
 OPENAI_MODEL_PRICES_PER_MTOK = {
-    "gpt-5.6-luna": (1.00, 6.00),
-    "gpt-5.6-terra": (2.50, 15.00),
-    "gpt-5.6-sol": (5.00, 30.00),
-    "gpt-5.6": (5.00, 30.00),
+    "gpt-5.6-luna": (1.00, 0.10, 6.00),
+    "gpt-5.6-terra": (2.50, 0.25, 15.00),
+    "gpt-5.6-sol": (5.00, 0.50, 30.00),
+    "gpt-5.6": (5.00, 0.50, 30.00),
 }
+AI_COST_SCALE = 1_000_000
+AI_COST_QUERY_TOTAL = "aiCostTotal"
+AI_COST_QUERY_LATEST = "aiCostLatest"
+AI_COST_QUERY_TOTAL_ARTICLES = "aiCostArticles"
+AI_COST_QUERY_LATEST_ARTICLES = "aiCostLatestArticles"
+AI_COST_QUERY_LAST_BATCH = "aiCostBatch"
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -100,6 +106,12 @@ class PreparedStory:
     ranked_story: RankedStory
     evidence: ArticleEvidence
     card: dict[str, str]
+
+
+@dataclass(frozen=True)
+class SummaryAttempt:
+    card: dict[str, str] | None
+    ai_cost: float
 
 
 TOPICS = {
@@ -215,6 +227,48 @@ def page_style() -> None:
                 color: #ddd5c8;
                 font-size: 0.82rem;
                 white-space: nowrap;
+            }
+
+            .ai-cost-strip {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                align-items: center;
+                gap: 1rem;
+                border-bottom: 1px solid #2f2b25;
+                padding: 0 0 0.85rem;
+                margin: -0.15rem 0 0.85rem;
+            }
+
+            .ai-cost-latest {
+                color: var(--skim-muted);
+                font-size: 0.82rem;
+                line-height: 1.35;
+            }
+
+            .ai-cost-latest strong {
+                color: var(--skim-ink);
+                font-weight: 650;
+            }
+
+            .ai-cost-total {
+                min-width: 8.2rem;
+                text-align: right;
+            }
+
+            .ai-cost-total-label {
+                color: var(--skim-muted);
+                font-size: 0.66rem;
+                font-weight: 700;
+                line-height: 1.2;
+                text-transform: uppercase;
+            }
+
+            .ai-cost-total-value {
+                color: var(--skim-accent);
+                font-size: 1.55rem;
+                font-weight: 800;
+                line-height: 1.08;
+                margin-top: 0.12rem;
             }
 
             [data-testid="stVerticalBlockBorderWrapper"] {
@@ -398,6 +452,19 @@ def page_style() -> None:
             }
 
             @media (max-width: 640px) {
+                .ai-cost-strip {
+                    align-items: end;
+                    gap: 0.6rem;
+                }
+
+                .ai-cost-total {
+                    min-width: 6.8rem;
+                }
+
+                .ai-cost-total-value {
+                    font-size: 1.3rem;
+                }
+
                 .story-title {
                     font-size: 1.2rem;
                     line-height: 1.28;
@@ -739,6 +806,13 @@ def query_param_text(name: str) -> str:
     return str(value)
 
 
+def query_param_nonnegative_int(name: str) -> int:
+    try:
+        return max(0, int(query_param_text(name)))
+    except (TypeError, ValueError):
+        return 0
+
+
 def initialize_keyword_state() -> None:
     first_load = not st.session_state.get("keyword_state_initialized", False)
     for index in range(9):
@@ -759,6 +833,29 @@ def persist_keywords_to_query_params() -> None:
             st.query_params[query_key] = value
         elif query_key in st.query_params:
             del st.query_params[query_key]
+
+
+def initialize_ai_cost_state() -> None:
+    if st.session_state.get("ai_cost_state_initialized", False):
+        return
+    st.session_state.ai_cost_total_micros = query_param_nonnegative_int(AI_COST_QUERY_TOTAL)
+    st.session_state.ai_cost_latest_micros = query_param_nonnegative_int(AI_COST_QUERY_LATEST)
+    st.session_state.ai_cost_total_articles = query_param_nonnegative_int(AI_COST_QUERY_TOTAL_ARTICLES)
+    st.session_state.ai_cost_latest_articles = query_param_nonnegative_int(AI_COST_QUERY_LATEST_ARTICLES)
+    st.session_state.ai_cost_last_batch_id = query_param_text(AI_COST_QUERY_LAST_BATCH)
+    st.session_state.ai_cost_state_initialized = True
+
+
+def persist_ai_cost_state() -> None:
+    values = {
+        AI_COST_QUERY_TOTAL: st.session_state.ai_cost_total_micros,
+        AI_COST_QUERY_LATEST: st.session_state.ai_cost_latest_micros,
+        AI_COST_QUERY_TOTAL_ARTICLES: st.session_state.ai_cost_total_articles,
+        AI_COST_QUERY_LATEST_ARTICLES: st.session_state.ai_cost_latest_articles,
+        AI_COST_QUERY_LAST_BATCH: st.session_state.ai_cost_last_batch_id,
+    }
+    for key, value in values.items():
+        st.query_params[key] = str(value)
 
 
 def complete_story_refresh() -> None:
@@ -1270,33 +1367,80 @@ def estimated_token_count(*parts: str, overhead_tokens: int = 0) -> int:
     return max(1, int(len(text) / 4) + overhead_tokens)
 
 
-def openai_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
+def openai_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> float | None:
     prices = OPENAI_MODEL_PRICES_PER_MTOK.get(model)
     if not prices:
         return None
-    input_price, output_price = prices
-    return ((input_tokens / 1_000_000) * input_price) + ((output_tokens / 1_000_000) * output_price)
+    input_price, cached_input_price, output_price = prices
+    cached_tokens = min(max(0, cached_input_tokens), max(0, input_tokens))
+    cache_write = min(max(0, cache_write_tokens), max(0, input_tokens - cached_tokens))
+    uncached_tokens = max(0, input_tokens - cached_tokens - cache_write)
+    return (
+        (uncached_tokens / 1_000_000) * input_price
+        + (cached_tokens / 1_000_000) * cached_input_price
+        + (cache_write / 1_000_000) * input_price * 1.25
+        + (max(0, output_tokens) / 1_000_000) * output_price
+    )
 
 
 def format_cost(value: float) -> str:
+    if value <= 0:
+        return "$0.00"
     if value < 0.01:
         return f"${value:.4f}"
     return f"${value:.2f}"
 
 
-def openai_cost_note(story: Story, article_text: str) -> str:
+def result_openai_cost(result: object, model: str) -> float | None:
+    if not isinstance(result, dict):
+        return None
+    try:
+        input_tokens = int(result.get("__usage_input_tokens", 0))
+        output_tokens = int(result.get("__usage_output_tokens", 0))
+        cached_input_tokens = int(result.get("__usage_cached_input_tokens", 0))
+        cache_write_tokens = int(result.get("__usage_cache_write_tokens", 0))
+    except (TypeError, ValueError):
+        return None
+    if input_tokens <= 0 and output_tokens <= 0:
+        return None
+    return openai_cost(
+        model,
+        input_tokens,
+        output_tokens,
+        cached_input_tokens,
+        cache_write_tokens,
+    )
+
+
+def card_ai_cost(card: object) -> float:
+    if not isinstance(card, dict):
+        return 0.0
+    try:
+        return max(0.0, float(card.get("__ai_cost", 0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def openai_cost_note(story: Story, article_text: str, card: dict[str, str]) -> str:
     if configured_ai_provider() != "openai":
         return ""
 
     summary_model = ai_model("openai", deep=False)
-    summary_input_tokens = estimated_token_count(
-        story.title,
-        story.summary_text,
-        article_text,
-        overhead_tokens=850,
-    )
-    summary_output_tokens = 1_500
-    summary_cost = openai_cost(summary_model, summary_input_tokens, summary_output_tokens)
+    summary_cost = card_ai_cost(card)
+    if summary_cost <= 0:
+        summary_input_tokens = estimated_token_count(
+            story.title,
+            story.summary_text,
+            article_text,
+            overhead_tokens=850,
+        )
+        summary_cost = openai_cost(summary_model, summary_input_tokens, 1_500)
     if summary_cost is None:
         return ""
 
@@ -1310,10 +1454,7 @@ def openai_cost_note(story: Story, article_text: str) -> str:
     deep_output_tokens = 1_500
     deep_cost = openai_cost(deep_model, deep_input_tokens, deep_output_tokens)
     deep_note = f" · deep if clicked ~{format_cost(deep_cost)}" if deep_cost is not None else ""
-    return (
-        f"AI estimate: article ~{format_cost(summary_cost)}"
-        f" · quality retry, only if needed, adds about the same{deep_note}"
-    )
+    return f"AI cost: this card ~{format_cost(summary_cost)}{deep_note}"
 
 
 def parse_openai_json(raw_text: str) -> dict:
@@ -1434,7 +1575,30 @@ def openai_json(
         },
         max_output_tokens=max_output_tokens,
     )
-    return parse_openai_json(getattr(response, "output_text", ""))
+    result = parse_openai_json(getattr(response, "output_text", ""))
+    usage = getattr(response, "usage", None)
+    input_details = getattr(usage, "input_tokens_details", None)
+    if usage and isinstance(result, dict):
+        result.update(
+            {
+                "__usage_input_tokens": str(max(0, int(getattr(usage, "input_tokens", 0) or 0))),
+                "__usage_output_tokens": str(max(0, int(getattr(usage, "output_tokens", 0) or 0))),
+                "__usage_cached_input_tokens": str(
+                    max(0, int(getattr(input_details, "cached_tokens", 0) or 0))
+                ),
+                "__usage_cache_write_tokens": str(
+                    max(
+                        0,
+                        int(
+                            getattr(input_details, "cache_write_tokens", 0)
+                            or getattr(usage, "cache_write_tokens", 0)
+                            or 0
+                        ),
+                    )
+                ),
+            }
+        )
+    return result
 
 
 def ai_json(
@@ -1766,10 +1930,10 @@ def smart_summarize(
     evidence: ArticleEvidence,
     detail: int,
     refresh_key: str,
-) -> dict[str, str] | None:
+) -> SummaryAttempt:
     provider = configured_ai_provider()
     if not provider:
-        return None
+        return SummaryAttempt(card=None, ai_cost=0.0)
 
     topics = infer_topics(story)
     fallback_links = story_learning_links(story, topics)
@@ -1794,7 +1958,19 @@ def smart_summarize(
             detail,
         )
     except Exception:
-        return None
+        return SummaryAttempt(card=None, ai_cost=0.0)
+
+    ai_cost = 0.0
+    if provider == "openai":
+        ai_cost = result_openai_cost(ai_result, model) or 0.0
+        if ai_cost <= 0:
+            estimated_input = estimated_token_count(
+                story.title,
+                rss_summary,
+                evidence.text,
+                overhead_tokens=850,
+            )
+            ai_cost = openai_cost(model, estimated_input, 1_500) or 0.0
 
     card = normalize_ai_card(ai_result)
     errors = card_quality_errors(card, story)
@@ -1813,17 +1989,33 @@ def smart_summarize(
                 errors,
             )
         except Exception:
-            return None
+            return SummaryAttempt(card=None, ai_cost=ai_cost)
+        if provider == "openai":
+            repair_cost = result_openai_cost(repaired, model)
+            if repair_cost is None:
+                estimated_repair_input = estimated_token_count(
+                    story.title,
+                    evidence.text,
+                    json.dumps(card, ensure_ascii=True, sort_keys=True),
+                    "; ".join(errors),
+                    overhead_tokens=650,
+                )
+                repair_cost = openai_cost(model, estimated_repair_input, 1_500)
+            ai_cost += repair_cost or 0.0
         card = normalize_ai_card(repaired)
         if card_quality_errors(card, story):
-            return None
+            return SummaryAttempt(card=None, ai_cost=ai_cost)
 
-    return {
-        "__headline": card["headline"],
-        "": card["summary"],
-        "Background": card["background"],
-        "Learn More": f"Learn more: {learning_links_text(fallback_links)}",
-    }
+    return SummaryAttempt(
+        card={
+            "__headline": card["headline"],
+            "__ai_cost": f"{ai_cost:.8f}",
+            "": card["summary"],
+            "Background": card["background"],
+            "Learn More": f"Learn more: {learning_links_text(fallback_links)}",
+        },
+        ai_cost=ai_cost,
+    )
 
 
 def deeper_analysis(story: Story, evidence: ArticleEvidence) -> dict[str, str]:
@@ -1958,7 +2150,7 @@ def render_story(prepared_story: PreparedStory) -> None:
             label_html = "" if label == "Learn More" else (f"<b>{html.escape(label)}:</b> " if label else "")
             rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
         st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
-        cost_note = openai_cost_note(story, evidence.text)
+        cost_note = openai_cost_note(story, evidence.text, prepared_story.card)
         if cost_note:
             st.markdown(f'<div class="story-ai-cost">{html.escape(cost_note)}</div>', unsafe_allow_html=True)
 
@@ -2015,6 +2207,37 @@ def render_header() -> None:
     )
 
 
+def render_ai_cost_summary(target: object) -> None:
+    latest_micros = int(st.session_state.get("ai_cost_latest_micros", 0))
+    total_micros = int(st.session_state.get("ai_cost_total_micros", 0))
+    latest_articles = int(st.session_state.get("ai_cost_latest_articles", 0))
+    total_articles = int(st.session_state.get("ai_cost_total_articles", 0))
+    if total_micros:
+        article_word = "article" if latest_articles == 1 else "articles"
+        latest_text = (
+            f"<strong>Latest feed:</strong> {latest_articles} {article_word} "
+            f"cost about {format_cost(latest_micros / AI_COST_SCALE)}. "
+            f"Tracking {total_articles} generated cards since this counter started."
+        )
+    else:
+        latest_text = (
+            "<strong>AI cost tracking is ready.</strong> The counter starts with the next "
+            "OpenAI-generated feed."
+        )
+    target.markdown(
+        f"""
+        <div class="ai-cost-strip">
+            <div class="ai-cost-latest">{latest_text}</div>
+            <div class="ai-cost-total">
+                <div class="ai-cost-total-label">Estimated all-time AI cost</div>
+                <div class="ai-cost-total-value">{format_cost(total_micros / AI_COST_SCALE)}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def settings_signature(
     selected_topics: list[str],
     include_aggregators: bool,
@@ -2060,6 +2283,42 @@ def mark_batch_shown(batch: Sequence[RankedStory], refresh_key: str) -> None:
     st.session_state.shown_cluster_history = history
     st.session_state.batch_refreshed_at = now
     st.session_state.batch_refresh_id = refresh_key
+
+
+def accumulate_ai_cost(
+    total_micros: int,
+    last_batch_id: str,
+    refresh_key: str,
+    batch_cost: float,
+) -> tuple[int, bool]:
+    if not refresh_key or refresh_key == last_batch_id or batch_cost <= 0:
+        return total_micros, False
+    return total_micros + round(batch_cost * AI_COST_SCALE), True
+
+
+def record_batch_ai_cost(
+    batch: Sequence[PreparedStory],
+    refresh_key: str,
+    attempted_ai_cost: float,
+) -> None:
+    if configured_ai_provider() != "openai" or not batch:
+        return
+    batch_cost = max(0.0, attempted_ai_cost)
+    total_micros, changed = accumulate_ai_cost(
+        int(st.session_state.ai_cost_total_micros),
+        str(st.session_state.ai_cost_last_batch_id),
+        refresh_key,
+        batch_cost,
+    )
+    if not changed:
+        return
+    latest_micros = round(batch_cost * AI_COST_SCALE)
+    st.session_state.ai_cost_total_micros = total_micros
+    st.session_state.ai_cost_latest_micros = latest_micros
+    st.session_state.ai_cost_total_articles += len(batch)
+    st.session_state.ai_cost_latest_articles = len(batch)
+    st.session_state.ai_cost_last_batch_id = refresh_key
+    persist_ai_cost_state()
 
 
 def batch_refreshed_label() -> str:
@@ -2114,14 +2373,14 @@ def prepare_ranked_story(
     item: RankedStory,
     detail: int,
     refresh_key: str,
-) -> PreparedStory | None:
+) -> tuple[PreparedStory | None, float]:
     evidence = fetch_article_evidence(item.story.link, item.story.title)
     if not evidence:
-        return None
-    card = smart_summarize(item.story, evidence, detail, refresh_key)
-    if not card:
-        return None
-    return PreparedStory(ranked_story=item, evidence=evidence, card=card)
+        return None, 0.0
+    attempt = smart_summarize(item.story, evidence, detail, refresh_key)
+    if not attempt.card:
+        return None, attempt.ai_cost
+    return PreparedStory(ranked_story=item, evidence=evidence, card=attempt.card), attempt.ai_cost
 
 
 def build_publishable_batch(
@@ -2138,24 +2397,29 @@ def build_publishable_batch(
     current = current_batch_from_keys(ranked_stories, keyword_rankings, show_archived)
     if current:
         refresh_key = str(st.session_state.get("batch_refresh_id", "")) or utc_now().isoformat()
-        restored = [
-            prepared
-            for item in current
-            if (prepared := prepare_ranked_story(item, detail, refresh_key))
-        ]
+        restored: list[PreparedStory] = []
+        restored_ai_cost = 0.0
+        for item in current:
+            prepared, attempt_cost = prepare_ranked_story(item, detail, refresh_key)
+            restored_ai_cost += attempt_cost
+            if prepared:
+                restored.append(prepared)
         if len(restored) == len(current):
+            record_batch_ai_cost(restored, refresh_key, restored_ai_cost)
             return restored
         st.session_state.current_cluster_keys = []
 
     refresh_key = utc_now().isoformat()
     batch: list[PreparedStory] = []
     used_cluster_keys: set[str] = set()
+    attempted_ai_cost = 0.0
 
     for item in ranked_stories[:MAX_BASE_CANDIDATES]:
         if len(batch) >= BATCH_SIZE:
             break
         if ranked_item_is_available(item, show_archived, shown_cluster_keys | used_cluster_keys):
-            prepared = prepare_ranked_story(item, detail, refresh_key)
+            prepared, attempt_cost = prepare_ranked_story(item, detail, refresh_key)
+            attempted_ai_cost += attempt_cost
             if prepared:
                 batch.append(prepared)
                 used_cluster_keys.add(item.cluster_key)
@@ -2163,7 +2427,8 @@ def build_publishable_batch(
     for keyword in keyword_rankings:
         for item in keyword_rankings[keyword][:MAX_KEYWORD_CANDIDATES]:
             if ranked_item_is_available(item, show_archived, shown_cluster_keys | used_cluster_keys):
-                prepared = prepare_ranked_story(item, detail, refresh_key)
+                prepared, attempt_cost = prepare_ranked_story(item, detail, refresh_key)
+                attempted_ai_cost += attempt_cost
                 if prepared:
                     batch.append(prepared)
                     used_cluster_keys.add(item.cluster_key)
@@ -2172,6 +2437,7 @@ def build_publishable_batch(
     ranked_batch = [prepared.ranked_story for prepared in batch]
     st.session_state.current_cluster_keys = [item.cluster_key for item in ranked_batch]
     mark_batch_shown(ranked_batch, refresh_key)
+    record_batch_ai_cost(batch, refresh_key, attempted_ai_cost)
     return batch
 
 
@@ -2201,8 +2467,10 @@ def main() -> None:
     st.session_state.setdefault("include_aggregators", True)
     st.session_state.setdefault("show_archived", False)
     initialize_keyword_state()
+    initialize_ai_cost_state()
 
     render_header()
+    cost_summary_slot = st.empty()
 
     if st.button("Complete story refresh", icon=":material/sync:", use_container_width=True):
         complete_story_refresh()
@@ -2226,6 +2494,7 @@ def main() -> None:
         errors.extend(keyword_errors)
     with st.spinner("Reading publisher articles and writing grounded summaries..."):
         batch = build_publishable_batch(ranked_stories, keyword_rankings, show_archived, detail)
+    render_ai_cost_summary(cost_summary_slot)
     render_batch_timestamp(len(batch))
 
     if not batch:

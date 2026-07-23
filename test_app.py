@@ -123,11 +123,36 @@ class ArticlePipelineTests(unittest.TestCase):
             patch.object(app, "ai_summary_cached", return_value=broken),
             patch.object(app, "ai_summary_repair_cached", return_value=self.good_card()) as repair,
         ):
-            result = app.smart_summarize(self.story, evidence, detail=3, refresh_key="refresh")
+            attempt = app.smart_summarize(self.story, evidence, detail=3, refresh_key="refresh")
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result["__headline"], self.good_card()["headline"])
+        self.assertIsNotNone(attempt.card)
+        self.assertEqual(attempt.card["__headline"], self.good_card()["headline"])
         repair.assert_called_once()
+
+    def test_openai_cost_applies_cached_and_cache_write_rates(self) -> None:
+        cost = app.openai_cost(
+            "gpt-5.6-terra",
+            input_tokens=1_000_000,
+            output_tokens=100_000,
+            cached_input_tokens=200_000,
+            cache_write_tokens=100_000,
+        )
+
+        self.assertAlmostEqual(cost, 3.6125)
+
+    def test_ai_cost_counter_does_not_count_same_batch_twice(self) -> None:
+        first_total, first_changed = app.accumulate_ai_cost(0, "", "batch-1", 0.25)
+        second_total, second_changed = app.accumulate_ai_cost(
+            first_total,
+            "batch-1",
+            "batch-1",
+            0.25,
+        )
+
+        self.assertTrue(first_changed)
+        self.assertEqual(first_total, 250_000)
+        self.assertFalse(second_changed)
+        self.assertEqual(second_total, first_total)
 
 
 if __name__ == "__main__":
