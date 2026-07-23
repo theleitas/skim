@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import html
+import json
+import os
 import re
 import textwrap
 import urllib.error
@@ -20,6 +22,8 @@ APP_NAME = "Skim"
 BATCH_SIZE = 20
 ITEMS_PER_SOURCE = 50
 FEED_TIMEOUT_SECONDS = 15
+OPENAI_SUMMARY_MODEL = "gpt-5.6-luna"
+OPENAI_DEEP_MODEL = "gpt-5.6-terra"
 REQUEST_HEADERS = {
     "User-Agent": "SkimPersonalNews/0.1 (+https://github.com/theleitas)",
 }
@@ -589,7 +593,7 @@ def persist_keywords_to_query_params() -> None:
 
 
 def complete_story_refresh() -> None:
-    st.cache_data.clear()
+    fetch_source.clear()
     st.session_state.seen_cluster_keys = set()
     st.session_state.current_cluster_keys = []
     st.session_state.last_settings = None
@@ -956,6 +960,220 @@ def summarize(story: Story, detail: int) -> dict[str, str]:
     }
 
 
+def openai_api_key() -> str:
+    try:
+        secret_value = st.secrets.get("OPENAI_API_KEY", "")
+    except Exception:
+        secret_value = ""
+    return str(secret_value or os.environ.get("OPENAI_API_KEY", "")).strip()
+
+
+def openai_is_configured() -> bool:
+    return bool(openai_api_key())
+
+
+def parse_openai_json(raw_text: str) -> dict:
+    if not raw_text:
+        return {}
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", raw_text, flags=re.DOTALL)
+        if not match:
+            return {}
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return {}
+
+
+def openai_json(model: str, instructions: str, prompt: str, effort: str, max_output_tokens: int) -> dict:
+    from openai import OpenAI
+
+    client = OpenAI(api_key=openai_api_key())
+    response = client.responses.create(
+        model=model,
+        instructions=instructions,
+        input=prompt,
+        reasoning={"effort": effort},
+        text={"format": {"type": "json_object"}},
+        max_output_tokens=max_output_tokens,
+    )
+    return parse_openai_json(getattr(response, "output_text", ""))
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def openai_summary_cached(
+    story_id: str,
+    title: str,
+    source: str,
+    group: str,
+    summary_text: str,
+    link: str,
+    topics: tuple[str, ...],
+    detail: int,
+) -> dict:
+    prompt = textwrap.dedent(
+        f"""
+        Source: {source}
+        Source type: {group}
+        Topics: {", ".join(topics)}
+        Headline: {clean_headline_source(title)}
+        RSS summary: {clean_text(summary_text) or "No useful RSS summary was provided."}
+        Full story URL: {link}
+        Desired detail level: {detail}/5
+        Stable story id: {story_id}
+        """
+    ).strip()
+    instructions = """
+    You are Skim, a sharp personal news analyst. Use only the provided headline, source,
+    RSS summary, topic labels, and URL; do not invent facts. Return valid JSON with:
+    summary, context, lesson, and links. summary is one brief plain-English explanation
+    of what happened, never the word "comments". context is one thoughtful paragraph
+    about the larger system, historical pattern, likely follow-on effects, and why this
+    event is a signal. lesson is a succinct thing to know, understand, or research next.
+    links is exactly three objects with label and url fields. Choose specific,
+    educational, story-relevant links, preferably Wikipedia pages for the central entity,
+    conflict, institution, technology, geography, or historical pattern.
+    """
+    return openai_json(OPENAI_SUMMARY_MODEL, instructions, prompt, effort="low", max_output_tokens=900)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def openai_deep_analysis_cached(
+    story_id: str,
+    title: str,
+    source: str,
+    group: str,
+    summary_text: str,
+    link: str,
+    topics: tuple[str, ...],
+) -> dict:
+    prompt = textwrap.dedent(
+        f"""
+        Source: {source}
+        Source type: {group}
+        Topics: {", ".join(topics)}
+        Headline: {clean_headline_source(title)}
+        RSS summary: {clean_text(summary_text) or "No useful RSS summary was provided."}
+        Full story URL: {link}
+        Stable story id: {story_id}
+        """
+    ).strip()
+    instructions = """
+    You are Terra inside Skim: an intellectually serious but readable news analyst.
+    Use only the provided story material; do not invent unreported facts. Think through
+    the event as a signal in a broader system. Return valid JSON with: analysis,
+    watch_next, research, and links. analysis is 4-6 sentences that explain the deeper
+    stakes, historical echo, who has leverage, who may react, and what future events this
+    could trigger. watch_next is one sentence naming the concrete sign that would make
+    the story more important. research is one sentence telling the reader what to learn
+    next. links is exactly three objects with label and url fields, chosen for specific
+    learning value and preferably from Wikipedia.
+    """
+    return openai_json(OPENAI_DEEP_MODEL, instructions, prompt, effort="medium", max_output_tokens=1200)
+
+
+def coerce_learning_links(raw_links: object, fallback_links: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
+    links: list[tuple[str, str]] = []
+    if isinstance(raw_links, list):
+        for item in raw_links:
+            label = ""
+            url = ""
+            if isinstance(item, dict):
+                label = str(item.get("label", "")).strip()
+                url = str(item.get("url", "")).strip()
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                label = str(item[0]).strip()
+                url = str(item[1]).strip()
+            if label and url.startswith(("https://", "http://")):
+                links.append((label, url))
+
+    links.extend(fallback_links)
+    unique_links: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for label, url in links:
+        if url in seen_urls:
+            continue
+        unique_links.append((label, url))
+        seen_urls.add(url)
+        if len(unique_links) == 3:
+            break
+    return tuple(unique_links)
+
+
+def learning_links_text(links: tuple[tuple[str, str], ...]) -> str:
+    return " / ".join(f"[{label}]({url})" for label, url in links)
+
+
+def smart_summarize(story: Story, detail: int) -> dict[str, str]:
+    if not openai_is_configured():
+        return summarize(story, detail)
+
+    topics = infer_topics(story)
+    fallback_links = wikipedia_links(story, topics)
+    try:
+        ai_result = openai_summary_cached(
+            story.id,
+            story.title,
+            story.source,
+            story.group,
+            story.summary_text,
+            story.link,
+            topics,
+            detail,
+        )
+    except Exception:
+        return summarize(story, detail)
+
+    summary = clean_text(str(ai_result.get("summary", "")))
+    context = clean_text(str(ai_result.get("context", "")))
+    lesson = clean_text(str(ai_result.get("lesson", "")))
+    links = learning_links_text(coerce_learning_links(ai_result.get("links"), fallback_links))
+    if not summary or is_weak_summary(summary):
+        summary = happened_summary(story, detail)
+    if not context:
+        context = context_text(story, topics)
+    if not lesson:
+        lesson = lesson_text(story, topics)
+
+    return {
+        "": summary,
+        "Context": context,
+        "Lesson": f"{lesson} Learn more: {links}",
+    }
+
+
+def deeper_analysis(story: Story) -> dict[str, str]:
+    topics = infer_topics(story)
+    fallback_links = wikipedia_links(story, topics)
+    if not openai_is_configured():
+        return {
+            "Deeper analysis": "Add an OPENAI_API_KEY in Streamlit secrets to enable Terra analysis for this story.",
+            "Research trail": f"Learn more: {learning_links_text(fallback_links)}",
+        }
+
+    ai_result = openai_deep_analysis_cached(
+        story.id,
+        story.title,
+        story.source,
+        story.group,
+        story.summary_text,
+        story.link,
+        topics,
+    )
+    links = learning_links_text(coerce_learning_links(ai_result.get("links"), fallback_links))
+    analysis = clean_text(str(ai_result.get("analysis", ""))) or context_text(story, topics)
+    watch_next = clean_text(str(ai_result.get("watch_next", "")))
+    research = clean_text(str(ai_result.get("research", ""))) or lesson_text(story, topics)
+
+    result = {"Deeper analysis": analysis}
+    if watch_next:
+        result["Watch next"] = watch_next
+    result["Research trail"] = f"{research} Learn more: {links}"
+    return result
+
+
 def story_age(story: Story) -> str:
     if not story.published:
         return "recent"
@@ -1002,7 +1220,7 @@ def share_component(story: Story) -> None:
 
 
 def render_summary_value(value: str) -> str:
-    link_pattern = re.compile(r"\[([^\]]+)\]\((https://en\.wikipedia\.org/wiki/[^)]+)\)")
+    link_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
     rendered = []
     cursor = 0
     for match in link_pattern.finditer(value):
@@ -1038,14 +1256,14 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
         else:
             st.markdown(story_title, unsafe_allow_html=True)
 
-        summary = summarize(story, detail)
+        summary = smart_summarize(story, detail)
         rows = ""
         for label, value in summary.items():
             label_html = f"<b>{html.escape(label)}:</b> " if label else ""
             rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
         st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
 
-        col1, col2, col3 = st.columns([1, 1, 1])
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
         with col1:
             st.link_button("Full story", story.link, use_container_width=True)
         with col2:
@@ -1058,6 +1276,23 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
                 st.rerun()
         with col3:
             share_component(story)
+        with col4:
+            if st.button("Deeper analysis", key=f"deep-{story.id}", use_container_width=True):
+                with st.spinner("Terra is building the deeper read..."):
+                    try:
+                        st.session_state.deep_analyses[story.id] = deeper_analysis(story)
+                    except Exception as exc:
+                        st.session_state.deep_analyses[story.id] = {
+                            "Deeper analysis": f"Terra could not complete this request: {exc}"
+                        }
+
+        if story.id in st.session_state.deep_analyses:
+            deep_rows = ""
+            for label, value in st.session_state.deep_analyses[story.id].items():
+                label_html = f"<b>{html.escape(label)}:</b> "
+                deep_rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
+            st.markdown(f'<div class="summary-grid">{deep_rows}</div>', unsafe_allow_html=True)
+
         source = f"Source: {story.source}"
         st.markdown(f'<div class="story-source">{html.escape(source)}</div>', unsafe_allow_html=True)
 
@@ -1070,7 +1305,7 @@ def render_header() -> None:
                 <div class="skim-brand">{APP_NAME}</div>
                 <div class="skim-tagline">Fast personal news, trimmed to what matters.</div>
             </div>
-            <div class="skim-pill">Free feeds / local summaries</div>
+            <div class="skim-pill">{"OpenAI Luna + Terra" if openai_is_configured() else "Free feeds / local summaries"}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1129,6 +1364,8 @@ def main() -> None:
         st.session_state.current_cluster_keys = []
     if "last_settings" not in st.session_state:
         st.session_state.last_settings = None
+    if "deep_analyses" not in st.session_state:
+        st.session_state.deep_analyses = {}
     st.session_state.setdefault("selected_topics", ["World", "US", "Politics", "Tech", "AI", "Reddit Hot"])
     st.session_state.setdefault("detail", 3)
     st.session_state.setdefault("max_headline_words", 13)
@@ -1220,8 +1457,8 @@ def main() -> None:
     st.markdown(
         """
         <p class="skim-footnote">
-            Skim currently uses public RSS feeds and an offline summarizer. No OpenAI key,
-            paid news API, Reddit token, or X token is required for this first version.
+            Skim uses public RSS feeds. Add OPENAI_API_KEY in Streamlit secrets to turn on
+            Luna summaries and Terra deeper analysis; without it, Skim falls back to local summaries.
         </p>
         """,
         unsafe_allow_html=True,

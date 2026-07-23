@@ -8,16 +8,32 @@ Skim is a personal Streamlit news app built around fast headlines, compact summa
 python3 -m streamlit run app.py
 ```
 
+## Optional OpenAI setup
+
+Skim runs without OpenAI, but it can use your OpenAI API account for smarter summaries:
+
+- Luna (`gpt-5.6-luna`) writes the normal story summary, context, lesson, and learning links.
+- Terra (`gpt-5.6-terra`) runs only when you click a story's Deeper analysis button.
+- OpenAI responses are cached for 24 hours so normal refreshes do not rebill the same story analysis.
+
+Locally, set the key before starting Streamlit:
+
+```bash
+export OPENAI_API_KEY="your_api_key_here"
+python3 -m streamlit run app.py
+```
+
+On Streamlit Community Cloud, open the app settings, add this to Secrets, and reboot the app:
+
+```toml
+OPENAI_API_KEY = "your_api_key_here"
+```
+
+Do not put your API key in GitHub. API usage is charged to the OpenAI account/project that owns the key.
+
 ## Tokens
 
-This first version is token-free:
-
-- No OpenAI API key.
-- No paid news API key.
-- No Reddit API token.
-- No X API token.
-
-It uses public RSS feeds and a local summarizer. X is listed as a future integration because useful official X API access usually requires a developer account and paid access.
+The news sources are still token-free and use public RSS feeds. Without `OPENAI_API_KEY`, Skim uses its local summarizer. X is listed as a future integration because useful official X API access usually requires a developer account and paid access.
 
 ## Free sources in this version
 
