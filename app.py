@@ -202,9 +202,8 @@ def page_style() -> None:
                 width: 100%;
                 aspect-ratio: 4 / 3;
                 object-fit: cover;
-                border: 1px solid #373229;
-                border-radius: 8px;
-                background: #0b0a09;
+                border: 0;
+                border-radius: 12px;
             }
 
             .story-source {
@@ -226,6 +225,7 @@ def page_style() -> None:
                 border: 1px solid #373229;
                 border-radius: 8px;
                 padding: 0.85rem 0.9rem;
+                margin-bottom: 0.95rem;
             }
 
             .summary-grid b {
@@ -240,6 +240,15 @@ def page_style() -> None:
             .summary-field:first-child {
                 border-top: 0;
                 padding-top: 0;
+            }
+
+            .lesson-link {
+                color: #f1c45b;
+                text-decoration: none;
+            }
+
+            .lesson-link:hover {
+                text-decoration: underline;
             }
 
             .interaction-label {
@@ -625,6 +634,42 @@ def split_sentences(text: str) -> list[str]:
     return [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
 
 
+def is_weak_summary(text: str) -> bool:
+    normalized = clean_text(text).lower().strip(" .:-")
+    if not normalized:
+        return True
+    weak_values = {
+        "comments",
+        "comment",
+        "read more",
+        "continue reading",
+        "view comments",
+        "submitted by",
+    }
+    if normalized in weak_values:
+        return True
+    if len(normalized.split()) <= 3 and any(word in normalized for word in ("comment", "url", "link")):
+        return True
+    return normalized.startswith(("comments url", "article url", "submitted by"))
+
+
+def happened_summary(story: Story, detail: int) -> str:
+    title_summary = clean_headline_source(story.title)
+    if story.group == "Aggregator":
+        return excerpt(title_summary, width=300)
+
+    useful_sentences = [sentence for sentence in split_sentences(story.summary_text) if not is_weak_summary(sentence)]
+    if not useful_sentences:
+        return excerpt(title_summary, width=300)
+
+    happened = useful_sentences[0]
+    if detail >= 4 and len(useful_sentences) > 1:
+        happened = f"{happened} {useful_sentences[1]}"
+    if is_weak_summary(happened):
+        happened = title_summary
+    return excerpt(happened, width=300)
+
+
 def infer_topics(story: Story) -> tuple[str, ...]:
     headline_text = f" {story.title} ".lower()
     haystack = f"{headline_text} {story.summary_text} ".lower()
@@ -662,69 +707,82 @@ def why_theme(story: Story, topics: tuple[str, ...]) -> str:
     return "general"
 
 
+def wikipedia_topic(story: Story, topics: tuple[str, ...]) -> tuple[str, str]:
+    haystack = f"{story.title} {story.summary_text}".lower()
+    candidates = (
+        ("Strait of Hormuz", "Strait_of_Hormuz", ("hormuz",)),
+        ("Iran", "Iran", ("iran", "tehran")),
+        ("Saudi Arabia", "Saudi_Arabia", ("saudi",)),
+        ("Tariff", "Tariff", ("tariff", "trade crosshairs")),
+        ("Nuclear power", "Nuclear_power", ("nuclear",)),
+        ("International relations", "International_relations", ("diplomacy", "alliance", "treaty")),
+        ("Artificial intelligence", "Artificial_intelligence", (" ai ", "artificial intelligence", "openai", "model")),
+        ("Social media", "Social_media", ("social media", "meta", "reddit", "x ")),
+        ("Climate change", "Climate_change", ("climate", "temperature", "warming")),
+        ("Public health", "Public_health", ("health", "hospital", "vaccine", "disease")),
+        ("Supply chain", "Supply_chain", ("supply chain", "shipping", "ports")),
+        ("Financial market", "Financial_market", ("market", "earnings", "stocks")),
+        ("Human rights", "Human_rights", ("protest", "rights", "censorship")),
+        ("Cybersecurity", "Computer_security", ("cyber", "hack", "data breach")),
+    )
+    padded_haystack = f" {haystack} "
+    for label, slug, needles in candidates:
+        if any(needle in padded_haystack for needle in needles):
+            return label, f"https://en.wikipedia.org/wiki/{slug}"
+    if "Business" in topics:
+        return "Economics", "https://en.wikipedia.org/wiki/Economics"
+    if "Tech" in topics or "AI" in topics:
+        return "Technology", "https://en.wikipedia.org/wiki/Technology"
+    if "Health" in topics:
+        return "Public health", "https://en.wikipedia.org/wiki/Public_health"
+    if "Science" in topics:
+        return "Science", "https://en.wikipedia.org/wiki/Science"
+    if "Politics" in topics or "World" in topics or "US" in topics:
+        return "International relations", "https://en.wikipedia.org/wiki/International_relations"
+    return "Current events", "https://en.wikipedia.org/wiki/Portal:Current_events"
+
+
+def lesson_text(story: Story, topics: tuple[str, ...]) -> str:
+    theme = why_theme(story, topics)
+    if theme == "health":
+        return "Know how this changes risk, access, and trust. Research which institutions are responsible and what evidence they are using."
+    if theme == "business":
+        return "Watch the second-order effects: prices, jobs, supply chains, and bargaining power often matter more than the first headline."
+    if theme == "technology":
+        return "Look for who gains leverage from the technology shift: users, companies, governments, workers, or the systems that connect them."
+    if theme == "politics":
+        return "Track the precedent, not just the event. The durable lesson is often how power responds under pressure."
+    return "Separate the immediate event from the pattern it reveals. Research the system behind the story before deciding what it means."
+
+
 def summarize(story: Story, detail: int) -> dict[str, str]:
-    sentences = split_sentences(story.summary_text)
-    first_sentence = sentences[0] if sentences else story.title
-    second_sentence = sentences[1] if len(sentences) > 1 else ""
     topics = infer_topics(story)
     topic_phrase = ", ".join(topics[:3])
 
     context = (
         f"Historically, this belongs to the larger {topic_phrase.lower()} pattern: pressure builds, institutions respond, "
-        "and public attention moves faster than the underlying systems can adjust.\n"
+        "and public attention moves faster than the underlying systems can adjust. "
         "In the near future, watch whether this becomes an isolated episode, a policy or market reaction, "
         "or the start of a longer argument over accountability and power."
     )
     if story.group == "Social":
         context = (
-            "Historically, social-first stories often begin as weak signals before institutions, journalists, or companies verify the facts.\n"
+            "Historically, social-first stories often begin as weak signals before institutions, journalists, or companies verify the facts. "
             "In the near future, the key question is whether this stays as online attention or breaks into mainstream coverage, "
             "policy response, or real-world behavior."
         )
     elif story.group == "Aggregator":
         context = (
-            "Historically, aggregator pickup means several editorial systems are converging on the same subject at once.\n"
+            "Historically, aggregator pickup means several editorial systems are converging on the same subject at once. "
             "In the near future, watch which framing wins: crisis, opportunity, scandal, market signal, or political turning point."
         )
 
-    theme = why_theme(story, topics)
-    why = (
-        "It matters because today's story can become tomorrow's operating environment: the assumptions leaders make, "
-        "the risks people prepare for, and the tradeoffs institutions are forced to defend."
-    )
-    if theme == "health":
-        why = (
-            "Health stories matter beyond the immediate facts because they can change trust in institutions, access to care, "
-            "household decisions, and public budgets. Over time, these stories often reveal whether systems are resilient "
-            "or merely reacting after strain becomes visible."
-        )
-    elif theme == "business":
-        why = (
-            "Business shifts rarely stay inside one company or one market. They can move prices, jobs, investor expectations, "
-            "supply chains, and political pressure, and the consequences often show up later in household costs or strategic decisions."
-        )
-    elif theme == "technology":
-        why = (
-            "Technology stories matter because infrastructure choices become social choices. What looks like a product update today "
-            "can reshape labor, privacy, competition, education, regulation, and who gets leverage in the next economic cycle."
-        )
-    elif theme == "politics":
-        why = (
-            "Political and global stories matter because they change the map of trust, security, alliances, and legitimacy. "
-            "The short-term event may pass quickly, but the precedent it sets can shape diplomacy, markets, rights, and public confidence."
-        )
-
-    if detail >= 4 and second_sentence:
-        happened = f"{first_sentence} {second_sentence}"
-    else:
-        happened = first_sentence
-    if story.group == "Aggregator":
-        happened = clean_headline_source(story.title)
+    wiki_label, wiki_url = wikipedia_topic(story, topics)
 
     return {
-        "What happened": excerpt(happened, width=300),
+        "": happened_summary(story, detail),
         "Context": context,
-        "Why it matters": why,
+        "Lesson": f"{lesson_text(story, topics)} Learn more: [{wiki_label}]({wiki_url})",
     }
 
 
@@ -773,6 +831,22 @@ def share_component(story: Story) -> None:
     )
 
 
+def render_summary_value(value: str) -> str:
+    link_match = re.search(r"\[([^\]]+)\]\((https://en\.wikipedia\.org/wiki/[^)]+)\)", value)
+    if not link_match:
+        return html.escape(value)
+
+    before = value[: link_match.start()]
+    after = value[link_match.end() :]
+    label = html.escape(link_match.group(1))
+    url = html.escape(link_match.group(2), quote=True)
+    return (
+        f"{html.escape(before)}"
+        f'<a class="lesson-link" href="{url}" target="_blank" rel="noopener noreferrer">{label}</a>'
+        f"{html.escape(after)}"
+    )
+
+
 def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int) -> None:
     story = ranked_story.story
     archived = story.id in st.session_state.archived
@@ -791,10 +865,10 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
             st.markdown(story_title, unsafe_allow_html=True)
 
         summary = summarize(story, detail)
-        rows = "".join(
-            f'<div class="summary-field"><b>{html.escape(label)}:</b> {html.escape(value).replace(chr(10), "<br>")}</div>'
-            for label, value in summary.items()
-        )
+        rows = ""
+        for label, value in summary.items():
+            label_html = f"<b>{html.escape(label)}:</b> " if label else ""
+            rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
         st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
 
         col1, col2, col3 = st.columns([1, 1, 1])
