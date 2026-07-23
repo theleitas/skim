@@ -12,9 +12,9 @@ python3 -m streamlit run app.py
 
 Skim runs without any AI API key, but OpenAI is the preferred hosted AI path:
 
-- GPT-5.6 Luna writes the normal story summary, Background, lesson, and learning links.
+- GPT-5.6 Terra writes the display headline, story summary, Background, and learning links.
 - GPT-5.6 Terra runs only when you click a story's Deep analysis button.
-- Article summaries regenerate for each new 20-story refresh so Background stays fresh; repeated reruns of the same batch reuse cached results.
+- Article summaries regenerate for each new 15-story refresh so Background stays fresh; repeated reruns of the same batch reuse cached results.
 
 Create an OpenAI API key, then set it before starting Streamlit locally:
 

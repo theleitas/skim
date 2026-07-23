@@ -18,16 +18,16 @@ import streamlit as st
 
 
 APP_NAME = "Skim"
-BATCH_SIZE = 20
+BATCH_SIZE = 15
 ITEMS_PER_SOURCE = 50
 FEED_TIMEOUT_SECONDS = 15
 RESEARCH_TIMEOUT_SECONDS = 8
 MIN_SUMMARY_WORDS = 18
 MIN_NEW_SUMMARY_TERMS = 7
 NO_REPEAT_HOURS = 48
-OPENAI_SUMMARY_MODEL = "gpt-5.6-luna"
+OPENAI_SUMMARY_MODEL = "gpt-5.6-terra"
 OPENAI_DEEP_MODEL = "gpt-5.6-terra"
-AI_SUMMARY_PROMPT_VERSION = "background-specific-v3"
+AI_SUMMARY_PROMPT_VERSION = "composed-card-v4"
 GEMINI_SUMMARY_MODEL = "gemini-2.5-flash"
 GEMINI_DEEP_MODEL = "gemini-2.5-pro"
 GROQ_SUMMARY_MODEL = "llama-3.3-70b-versatile"
@@ -212,14 +212,14 @@ def page_style() -> None:
             }
 
             .story-title {
-                font-size: clamp(0.92rem, 1.45vw, 1.08rem);
-                line-height: 1.46;
-                margin: 0 0 0.95rem 0;
+                font-size: clamp(0.82rem, 1.2vw, 0.96rem);
+                line-height: 1.5;
+                margin: 0 0 0.85rem 0;
                 color: var(--skim-ink);
                 max-width: 34rem;
                 display: -webkit-box;
                 -webkit-box-orient: vertical;
-                -webkit-line-clamp: 2;
+                -webkit-line-clamp: 3;
                 overflow: hidden;
             }
 
@@ -778,11 +778,29 @@ def rank_stories(stories: list[Story], keywords: tuple[str, ...] = ()) -> list[R
 
 
 def headline(title: str, max_words: int) -> str:
-    max_words = min(max_words, 10)
-    words = clean_headline_source(title).split()
-    if len(words) <= max_words:
+    return clean_headline_source(title)
+
+
+def sensible_display_headline(candidate: str, story: Story) -> str:
+    candidate = clean_headline_source(candidate)
+    candidate = candidate.replace("...", "").strip(" -:;,.")
+    if not candidate or len(candidate.split()) < 4:
+        candidate = clean_headline_source(story.title)
+
+    words = candidate.split()
+    if len(words) <= 14:
         return " ".join(words)
-    return " ".join(words[:max_words]).rstrip(",:;")
+
+    phrase_breaks = {"after", "as", "amid", "while", "over", "following", "despite", "because"}
+    for index in range(min(14, len(words) - 1), 7, -1):
+        if words[index].lower().strip(",:;") in phrase_breaks:
+            return " ".join(words[:index]).rstrip(",:;")
+
+    punctuation_text = " ".join(words[:16])
+    punctuation_match = re.match(r"^(.{30,95}?)[,:;]\s", punctuation_text)
+    if punctuation_match and len(punctuation_match.group(1).split()) >= 6:
+        return punctuation_match.group(1).rstrip(",:;")
+    return " ".join(words[:12]).rstrip(",:;")
 
 
 def excerpt(text: str, width: int) -> str:
@@ -1257,9 +1275,10 @@ def summarize(story: Story, detail: int) -> dict[str, str]:
     links = learning_links_text(story_learning_links(story, topics))
 
     return {
+        "__headline": headline(story.title, 0),
         "": happened_summary(story, detail),
         "Background": context_text(story, topics),
-        "Lesson": f"{lesson_text(story, topics)} Learn more: {links}",
+        "Learn More": f"Learn more: {links}",
     }
 
 
@@ -1348,9 +1367,9 @@ def openai_cost_note(story: Story, research_text: str) -> str:
         story.title,
         story.summary_text,
         research_text,
-        overhead_tokens=650,
+        overhead_tokens=850,
     )
-    summary_output_tokens = 650
+    summary_output_tokens = 950
     summary_cost = openai_cost(summary_model, summary_input_tokens, summary_output_tokens)
     if summary_cost is None:
         return ""
@@ -1510,22 +1529,24 @@ def ai_summary_cached(
     You are Skim, a sharp personal news analyst. Use the provided headline, source,
     RSS summary, URL, topic labels, and refresh-time research notes; do not invent facts.
     Return valid JSON with:
-    summary, background, lesson, and links. summary is at least three sentences explaining
-    what happened in plain English, never the word "comments", and never just a headline.
-    background is one smart, specific paragraph that teaches the backstory and perspective
-    behind this exact story: why it is important, what history or prior tension makes it
-    news, who has leverage, what could happen next, and what larger stress or change it
-    may reveal. Use the research notes to add specificity when they are available. Do not
-    use generic reusable background. Name or clearly refer to the story's central subject,
-    place, institution, company, disease, technology, market, or conflict. lesson is a
-    succinct thing to know, understand, or research next.
+    headline, summary, background, and links. headline is a complete, natural headline
+    of 6-12 words; it must not end abruptly and must not use ellipses. summary is 4-5
+    well-written sentences explaining what happened in plain English, never the word
+    "comments", and never just a headline. Write with calm authority and useful detail,
+    not filler. background is one smart, specific paragraph that teaches the backstory
+    and perspective behind this exact story: why it is important, what history or prior
+    tension makes it news, who has leverage, what could happen next, and what larger
+    stress or change it may reveal. Use the research notes to add specificity when they
+    are available. Do not use generic reusable background. Name or clearly refer to the
+    story's central subject, place, institution, company, disease, technology, market,
+    or conflict.
     links is exactly three objects with label and url fields. The first two links must
     be useful non-Wikipedia references tied to the story, such as source pages,
     official institutions, data/background pages, reputable topic hubs, or related
     coverage. The third and final link must be one relevant Wikipedia page for the
     central entity, conflict, institution, technology, geography, or historical pattern.
     """
-    return ai_json(provider, model, instructions, prompt, effort="low", max_output_tokens=1300)
+    return ai_json(provider, model, instructions, prompt, effort="medium", max_output_tokens=1800)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -1632,8 +1653,9 @@ def context_is_too_generic(context: str, story: Story) -> bool:
     return len(title_tokens.intersection(context_tokens)) < 3
 
 
-def ensure_three_sentence_summary(summary: str, story: Story, detail: int) -> str:
-    if sentence_count(summary) >= 3 and not is_weak_summary(summary):
+def ensure_robust_summary(summary: str, story: Story, detail: int) -> str:
+    minimum_sentences = 4
+    if sentence_count(summary) >= minimum_sentences and not is_weak_summary(summary):
         return summary
 
     fallback_sentences = split_sentences(happened_summary(story, detail))
@@ -1642,16 +1664,18 @@ def ensure_three_sentence_summary(summary: str, story: Story, detail: int) -> st
     for sentence in [*summary_sentences, *fallback_sentences]:
         if sentence and sentence not in combined:
             combined.append(sentence)
-        if len(combined) == 3:
+        if len(combined) == minimum_sentences:
             break
 
-    while len(combined) < 3:
+    while len(combined) < minimum_sentences:
         if len(combined) == 0:
             combined.append(excerpt(clean_headline_source(story.title), width=220))
         elif len(combined) == 1:
             combined.append("The story is important enough to watch because it has surfaced across a live news feed.")
-        else:
+        elif len(combined) == 2:
             combined.append("The full article should clarify the specific facts, timeline, and people involved.")
+        else:
+            combined.append("The bigger value is understanding what this event reveals beyond the first headline.")
     return " ".join(combined)
 
 
@@ -1682,21 +1706,20 @@ def smart_summarize(story: Story, detail: int, refresh_key: str, research_text: 
     except Exception:
         return summarize(story, detail)
 
+    ai_headline = clean_text(strip_markdown_links(str(ai_result.get("headline", ""))))
     summary = clean_text(strip_markdown_links(str(ai_result.get("summary", ""))))
     background_value = ai_result.get("background") or ai_result.get("context", "")
     background = clean_text(strip_markdown_links(str(background_value)))
-    lesson = clean_text(strip_markdown_links(str(ai_result.get("lesson", ""))))
     links = learning_links_text(coerce_learning_links(ai_result.get("links"), fallback_links))
-    summary = ensure_three_sentence_summary(summary, story, detail)
+    summary = ensure_robust_summary(summary, story, detail)
     if context_is_too_generic(background, story):
         background = context_text(story, topics)
-    if not lesson:
-        lesson = lesson_text(story, topics)
 
     return {
+        "__headline": sensible_display_headline(ai_headline, story),
         "": summary,
         "Background": background,
-        "Lesson": f"{lesson} Learn more: {links}",
+        "Learn More": f"Learn more: {links}",
     }
 
 
@@ -1796,7 +1819,7 @@ def render_summary_value(value: str) -> str:
     return "".join(rendered)
 
 
-def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int, refresh_key: str) -> None:
+def render_story(ranked_story: RankedStory, detail: int, refresh_key: str) -> None:
     story = ranked_story.story
     archived = story.id in st.session_state.archived
     with st.container(border=True):
@@ -1806,7 +1829,12 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
             f"{ranked_story.topic_story_count} {story_word} on this topic"
         )
         st.markdown(f'<div class="story-meta">{html.escape(meta)}</div>', unsafe_allow_html=True)
-        story_title_text = html.escape(headline(story.title, max_headline_words))
+        topics = infer_topics(story)
+        provider = configured_ai_provider()
+        gathered_research = research_notes(story, topics) if provider else ""
+        summary = smart_summarize(story, detail, refresh_key, gathered_research)
+        display_headline = summary.pop("__headline", headline(story.title, 0))
+        story_title_text = html.escape(display_headline)
         if story.image_url:
             story_title = f'<h2 class="story-title">{story_title_text}</h2>'
             title_col, image_col = st.columns([3, 1], vertical_alignment="top")
@@ -1819,13 +1847,11 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
             story_title = f'<h2 class="story-title story-title-full">{story_title_text}</h2>'
             st.markdown(story_title, unsafe_allow_html=True)
 
-        topics = infer_topics(story)
-        provider = configured_ai_provider()
-        gathered_research = research_notes(story, topics) if provider else ""
-        summary = smart_summarize(story, detail, refresh_key, gathered_research)
         rows = ""
         for label, value in summary.items():
-            label_html = f"<b>{html.escape(label)}:</b> " if label else ""
+            if label.startswith("__"):
+                continue
+            label_html = "" if label == "Learn More" else (f"<b>{html.escape(label)}:</b> " if label else "")
             rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
         st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
         cost_note = openai_cost_note(story, gathered_research)
@@ -1992,8 +2018,6 @@ def main() -> None:
         st.session_state.batch_refreshed_at = ""
     st.session_state.setdefault("selected_topics", ["World", "US", "Politics", "Tech", "AI", "Reddit Hot"])
     st.session_state.setdefault("detail", 3)
-    st.session_state.setdefault("max_headline_words", 10)
-    st.session_state.max_headline_words = min(int(st.session_state.max_headline_words), 10)
     st.session_state.setdefault("include_social", True)
     st.session_state.setdefault("include_aggregators", True)
     st.session_state.setdefault("show_archived", False)
@@ -2006,7 +2030,6 @@ def main() -> None:
 
     selected_topics = st.session_state.selected_topics
     detail = st.session_state.detail
-    max_headline_words = st.session_state.max_headline_words
     include_social = st.session_state.include_social
     include_aggregators = st.session_state.include_aggregators
     show_archived = st.session_state.show_archived
@@ -2034,7 +2057,6 @@ def main() -> None:
             render_story(
                 ranked_story,
                 detail=detail,
-                max_headline_words=max_headline_words,
                 refresh_key=refresh_key,
             )
 
@@ -2063,7 +2085,6 @@ def main() -> None:
         col1, col2 = st.columns(2)
         with col1:
             st.slider("Summary depth", min_value=1, max_value=5, step=1, key="detail")
-            st.slider("Headline words", min_value=6, max_value=10, step=1, key="max_headline_words")
         with col2:
             st.toggle("Reddit and Hacker News", key="include_social")
             st.toggle("Google News aggregators", key="include_aggregators")
@@ -2093,8 +2114,8 @@ def main() -> None:
     st.markdown(
         """
         <p class="skim-footnote">
-            Skim uses public RSS feeds. Add GEMINI_API_KEY in Streamlit secrets for the best free AI path;
-            Groq, xAI, and OpenAI keys are optional fallbacks. Without an AI key, Skim uses local summaries.
+            Skim uses public RSS feeds. Add OPENAI_API_KEY in Streamlit secrets for AI-written
+            headlines, summaries, and Background. Without an AI key, Skim uses local summaries.
         </p>
         """,
         unsafe_allow_html=True,
