@@ -203,11 +203,13 @@ def page_style() -> None:
 
             .story-title {
                 font-size: clamp(1.18rem, 2vw, 1.42rem);
-                line-height: 1.22;
-                margin: 0 0 0.9rem 0;
+                line-height: 1.28;
+                margin: 0 0 1.1rem 0;
                 color: var(--skim-ink);
                 max-width: 34rem;
-                max-height: calc(1.22em * 2);
+                display: -webkit-box;
+                -webkit-box-orient: vertical;
+                -webkit-line-clamp: 2;
                 overflow: hidden;
             }
 
