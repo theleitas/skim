@@ -202,9 +202,9 @@ def page_style() -> None:
             }
 
             .story-title {
-                font-size: clamp(1.18rem, 2vw, 1.42rem);
-                line-height: 1.28;
-                margin: 0 0 1.1rem 0;
+                font-size: clamp(1.02rem, 1.7vw, 1.24rem);
+                line-height: 1.42;
+                margin: 0 0 1.2rem 0;
                 color: var(--skim-ink);
                 max-width: 34rem;
                 display: -webkit-box;
@@ -270,11 +270,29 @@ def page_style() -> None:
                 border-radius: 999px;
                 background: #2a2927;
                 color: #f1c45b;
-                padding: 0.16rem 0.5rem;
-                margin: 0.12rem 0.16rem 0.12rem 0;
+                padding: 0.1rem 0.38rem;
+                margin: 0.08rem 0.12rem 0.08rem 0;
+                font-size: 0.72rem;
+                line-height: 1.15;
                 text-decoration: none;
                 white-space: nowrap;
                 box-shadow: 0 0 8px rgba(210, 210, 210, 0.08);
+            }
+
+            .learn-more-row {
+                display: flex;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 0.16rem;
+                margin-top: 0.46rem;
+            }
+
+            .learn-more-label {
+                color: var(--skim-muted);
+                font-size: 0.72rem;
+                font-weight: 700;
+                margin-right: 0.18rem;
+                text-transform: uppercase;
             }
 
             .lesson-link:hover {
@@ -1532,6 +1550,34 @@ def share_component(story: Story) -> None:
 
 def render_summary_value(value: str) -> str:
     link_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+
+    def render_link_pills(link_text: str) -> str:
+        rendered_links = []
+        cursor = 0
+        for match in link_pattern.finditer(link_text):
+            lead_text = link_text[cursor : match.start()].replace(" / ", " ")
+            rendered_links.append(html.escape(lead_text))
+            label = html.escape(match.group(1))
+            url = html.escape(match.group(2), quote=True)
+            rendered_links.append(
+                f'<a class="lesson-link" href="{url}" target="_blank" rel="noopener noreferrer">{label}</a>'
+            )
+            cursor = match.end()
+        rendered_links.append(html.escape(link_text[cursor:].replace(" / ", " ")))
+        return "".join(rendered_links)
+
+    learn_more_match = re.search(r"\s*Learn more:\s*", value, flags=re.IGNORECASE)
+    if learn_more_match:
+        intro = html.escape(value[: learn_more_match.start()].strip())
+        link_text = value[learn_more_match.end() :]
+        learn_more = (
+            '<div class="learn-more-row">'
+            '<span class="learn-more-label">Learn More</span>'
+            f"{render_link_pills(link_text)}"
+            "</div>"
+        )
+        return f"{intro}{learn_more}" if intro else learn_more
+
     rendered = []
     cursor = 0
     for match in link_pattern.finditer(value):
