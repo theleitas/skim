@@ -17,6 +17,9 @@ import streamlit.components.v1 as components
 
 
 APP_NAME = "Skim"
+BATCH_SIZE = 20
+ITEMS_PER_SOURCE = 50
+FEED_TIMEOUT_SECONDS = 15
 REQUEST_HEADERS = {
     "User-Agent": "SkimPersonalNews/0.1 (+https://github.com/theleitas)",
 }
@@ -51,8 +54,6 @@ class RankedStory:
     topic_story_count: int
     score: float
 
-
-BATCH_SIZE = 20
 
 TOPICS = {
     "World": ("world", "war", "conflict", "diplomacy", "election", "government"),
@@ -447,7 +448,7 @@ def clean_headline_source(title: str) -> str:
 def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
     request = urllib.request.Request(source.url, headers=REQUEST_HEADERS)
     try:
-        with urllib.request.urlopen(request, timeout=8) as response:
+        with urllib.request.urlopen(request, timeout=FEED_TIMEOUT_SECONDS) as response:
             xml_bytes = response.read()
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
         return [], f"{source.name}: {exc}"
@@ -459,7 +460,7 @@ def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
 
     entries = [node for node in root.iter() if local_name(node.tag) in {"item", "entry"}]
     stories: list[Story] = []
-    for entry in entries[:30]:
+    for entry in entries[:ITEMS_PER_SOURCE]:
         title = child_text(entry, ("title",))
         link = child_link(entry)
         summary_raw = child_raw_text(entry, ("description", "summary", "content", "encoded"))
@@ -556,6 +557,42 @@ def custom_keywords() -> tuple[str, ...]:
         if value:
             keywords.append(value)
     return tuple(dict.fromkeys(keywords))
+
+
+def query_param_text(name: str) -> str:
+    value = st.query_params.get(name, "")
+    if isinstance(value, list):
+        return str(value[-1]) if value else ""
+    return str(value)
+
+
+def initialize_keyword_state() -> None:
+    first_load = not st.session_state.get("keyword_state_initialized", False)
+    for index in range(9):
+        key = f"custom_keyword_{index}"
+        query_key = f"kw{index + 1}"
+        if first_load:
+            st.session_state.setdefault(key, query_param_text(query_key))
+        else:
+            st.session_state.setdefault(key, "")
+    st.session_state.keyword_state_initialized = True
+
+
+def persist_keywords_to_query_params() -> None:
+    for index in range(9):
+        query_key = f"kw{index + 1}"
+        value = str(st.session_state.get(f"custom_keyword_{index}", "")).strip()
+        if value:
+            st.query_params[query_key] = value
+        elif query_key in st.query_params:
+            del st.query_params[query_key]
+
+
+def complete_story_refresh() -> None:
+    st.cache_data.clear()
+    st.session_state.seen_cluster_keys = set()
+    st.session_state.current_cluster_keys = []
+    st.session_state.last_settings = None
 
 
 def keyword_match_count(story: Story, keywords: tuple[str, ...]) -> int:
@@ -1049,10 +1086,12 @@ def main() -> None:
     st.session_state.setdefault("include_social", True)
     st.session_state.setdefault("include_aggregators", True)
     st.session_state.setdefault("show_archived", False)
-    for index in range(9):
-        st.session_state.setdefault(f"custom_keyword_{index}", "")
+    initialize_keyword_state()
 
     render_header()
+
+    if st.button("Complete story refresh", icon=":material/sync:", use_container_width=True):
+        complete_story_refresh()
 
     selected_topics = st.session_state.selected_topics
     detail = st.session_state.detail
@@ -1067,8 +1106,9 @@ def main() -> None:
         st.session_state.current_cluster_keys = []
         st.session_state.last_settings = current_settings
 
-    stories, errors = fetch_stories(tuple(selected_topics), include_aggregators, include_social, keywords)
-    ranked_stories = rank_stories(stories, keywords)
+    with st.spinner("Building a stronger story list..."):
+        stories, errors = fetch_stories(tuple(selected_topics), include_aggregators, include_social, keywords)
+        ranked_stories = rank_stories(stories, keywords)
     batch = select_batch(ranked_stories, show_archived)
 
     if not batch:
@@ -1122,6 +1162,7 @@ def main() -> None:
                         placeholder=f"Keyword {keyword_index + 1}",
                         label_visibility="collapsed",
                     )
+        persist_keywords_to_query_params()
         st.caption(
             "X is not included yet because the official useful API paths generally require paid access. "
             "Skim can add it later when you want to connect an X developer account."
