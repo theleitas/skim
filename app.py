@@ -746,42 +746,85 @@ def why_theme(story: Story, topics: tuple[str, ...]) -> str:
     return "general"
 
 
-def wikipedia_topic(story: Story, topics: tuple[str, ...]) -> tuple[str, str]:
-    haystack = f"{story.title} {story.summary_text}".lower()
+def wikipedia_links(story: Story, topics: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    haystack = story_haystack(story)
+    if "wildberries" in haystack:
+        return (
+            ("Wildberries", "https://en.wikipedia.org/wiki/Wildberries"),
+            ("Russian invasion of Ukraine", "https://en.wikipedia.org/wiki/Russian_invasion_of_Ukraine"),
+            ("Drone warfare", "https://en.wikipedia.org/wiki/Drone_warfare"),
+        )
     candidates = (
-        ("Strait of Hormuz", "Strait_of_Hormuz", ("hormuz",)),
-        ("Iran", "Iran", ("iran", "tehran")),
-        ("Saudi Arabia", "Saudi_Arabia", ("saudi",)),
-        ("Tariff", "Tariff", ("tariff", "trade crosshairs")),
-        ("Nuclear power", "Nuclear_power", ("nuclear",)),
-        ("International relations", "International_relations", ("diplomacy", "alliance", "treaty")),
-        ("Artificial intelligence", "Artificial_intelligence", (" ai ", "artificial intelligence", "openai", "model")),
-        ("Social media", "Social_media", ("social media", "meta", "reddit", "x ")),
-        ("Climate change", "Climate_change", ("climate", "temperature", "warming")),
-        ("Public health", "Public_health", ("health", "hospital", "vaccine", "disease")),
-        ("Supply chain", "Supply_chain", ("supply chain", "shipping", "ports")),
-        ("Financial market", "Financial_market", ("market", "earnings", "stocks")),
-        ("Human rights", "Human_rights", ("protest", "rights", "censorship")),
-        ("Cybersecurity", "Computer_security", ("cyber", "hack", "data breach")),
+        ("Wildberries", "Wildberries", ("wildberries",), 130),
+        ("Russian invasion of Ukraine", "Russian_invasion_of_Ukraine", ("ukraine", "russia's attacks", "russian", "drone"), 90),
+        ("Drone warfare", "Drone_warfare", ("drone", "drones", "unmanned"), 85),
+        ("Economy of Russia", "Economy_of_Russia", ("russia", "russian business", "businesses under strain"), 70),
+        ("Strait of Hormuz", "Strait_of_Hormuz", ("hormuz",), 120),
+        ("Iran", "Iran", ("iran", "tehran"), 80),
+        ("Saudi Arabia", "Saudi_Arabia", ("saudi",), 80),
+        ("Tariff", "Tariff", ("tariff", "trade crosshairs"), 100),
+        ("Protectionism", "Protectionism", ("tariff", "trade", "imports", "exports"), 65),
+        ("Supply chain", "Supply_chain", ("supply chain", "shipping", "ports", "warehouse", "warehouses"), 75),
+        ("Nuclear power", "Nuclear_power", ("nuclear",), 85),
+        ("International relations", "International_relations", ("diplomacy", "alliance", "treaty"), 70),
+        ("Artificial intelligence", "Artificial_intelligence", (" ai ", "artificial intelligence", "openai", "model"), 95),
+        ("Cloud computing", "Cloud_computing", ("cloud",), 70),
+        ("Social media", "Social_media", ("social media", "meta", "reddit", "x "), 90),
+        ("Algorithm", "Algorithm", ("algorithm",), 65),
+        ("Climate change", "Climate_change", ("climate", "temperature", "warming", "heat"), 95),
+        ("Public health", "Public_health", ("health", "hospital", "vaccine", "disease"), 85),
+        ("Financial market", "Financial_market", ("market", "earnings", "stocks"), 75),
+        ("Human rights", "Human_rights", ("protest", "rights", "censorship"), 85),
+        ("Cybersecurity", "Computer_security", ("cyber", "hack", "data breach"), 90),
+        ("Cultural heritage", "Cultural_heritage", ("louvre", "museum", "jewel", "artifact", "heritage"), 80),
     )
-    padded_haystack = f" {haystack} "
-    for label, slug, needles in candidates:
-        if any(needle in padded_haystack for needle in needles):
-            return label, f"https://en.wikipedia.org/wiki/{slug}"
+    scored: list[tuple[int, str, str]] = []
+    for label, slug, needles, weight in candidates:
+        matches = sum(1 for needle in needles if needle in haystack)
+        if matches:
+            scored.append((weight + (matches * 12), label, f"https://en.wikipedia.org/wiki/{slug}"))
+
+    fallback_links: list[tuple[str, str]] = []
     if "Business" in topics:
-        return "Economics", "https://en.wikipedia.org/wiki/Economics"
+        fallback_links.extend((
+            ("Economics", "https://en.wikipedia.org/wiki/Economics"),
+            ("Supply chain", "https://en.wikipedia.org/wiki/Supply_chain"),
+        ))
     if "Tech" in topics or "AI" in topics:
-        return "Technology", "https://en.wikipedia.org/wiki/Technology"
+        fallback_links.extend((
+            ("Technology", "https://en.wikipedia.org/wiki/Technology"),
+            ("Artificial intelligence", "https://en.wikipedia.org/wiki/Artificial_intelligence"),
+        ))
     if "Health" in topics:
-        return "Public health", "https://en.wikipedia.org/wiki/Public_health"
+        fallback_links.append(("Public health", "https://en.wikipedia.org/wiki/Public_health"))
     if "Science" in topics:
-        return "Science", "https://en.wikipedia.org/wiki/Science"
+        fallback_links.append(("Science", "https://en.wikipedia.org/wiki/Science"))
     if "Politics" in topics or "World" in topics or "US" in topics:
-        return "International relations", "https://en.wikipedia.org/wiki/International_relations"
-    return "Current events", "https://en.wikipedia.org/wiki/Portal:Current_events"
+        fallback_links.extend((
+            ("International relations", "https://en.wikipedia.org/wiki/International_relations"),
+            ("Geopolitics", "https://en.wikipedia.org/wiki/Geopolitics"),
+        ))
+    fallback_links.append(("Current events", "https://en.wikipedia.org/wiki/Portal:Current_events"))
+
+    ranked_links = [(label, url) for _, label, url in sorted(scored, reverse=True)]
+    ranked_links.extend(fallback_links)
+
+    unique_links: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for label, url in ranked_links:
+        if url in seen_urls:
+            continue
+        unique_links.append((label, url))
+        seen_urls.add(url)
+        if len(unique_links) == 3:
+            break
+    return tuple(unique_links)
 
 
 def lesson_text(story: Story, topics: tuple[str, ...]) -> str:
+    haystack = story_haystack(story)
+    if "wildberries" in haystack:
+        return "Know that the war is reaching Russia's private logistics and consumer economy, not just military targets; research how e-commerce, warehouses, and drone warfare have become part of modern conflict."
     theme = why_theme(story, topics)
     if theme == "health":
         return "Know how this changes risk, access, and trust. Research which institutions are responsible and what evidence they are using."
@@ -805,6 +848,12 @@ def has_any(text: str, needles: tuple[str, ...]) -> bool:
 def context_text(story: Story, topics: tuple[str, ...]) -> str:
     haystack = story_haystack(story)
 
+    if "wildberries" in haystack:
+        return (
+            "This is a sign that the Russia-Ukraine war is pushing deeper into the infrastructure of ordinary economic life. "
+            "Wildberries is not just a retailer; it represents logistics, warehousing, consumer access, and the private-sector systems Russians rely on every day. "
+            "If attacks like this continue, they could pressure insurers, landlords, delivery networks, regional officials, and business owners, while signaling that Ukraine wants the costs of war felt inside Russia's domestic economy."
+        )
     if has_any(haystack, ("hormuz", "iran", "missile", "strike", "war", "defense bill", "military", "nuclear deal")):
         return (
             "This is really about the machinery of escalation: military threats, energy routes, alliances, and domestic politics all pressing on each other at once. "
@@ -898,12 +947,12 @@ def context_text(story: Story, topics: tuple[str, ...]) -> str:
 
 def summarize(story: Story, detail: int) -> dict[str, str]:
     topics = infer_topics(story)
-    wiki_label, wiki_url = wikipedia_topic(story, topics)
+    links = " / ".join(f"[{label}]({url})" for label, url in wikipedia_links(story, topics))
 
     return {
         "": happened_summary(story, detail),
         "Context": context_text(story, topics),
-        "Lesson": f"{lesson_text(story, topics)} Learn more: [{wiki_label}]({wiki_url})",
+        "Lesson": f"{lesson_text(story, topics)} Learn more: {links}",
     }
 
 
@@ -953,19 +1002,19 @@ def share_component(story: Story) -> None:
 
 
 def render_summary_value(value: str) -> str:
-    link_match = re.search(r"\[([^\]]+)\]\((https://en\.wikipedia\.org/wiki/[^)]+)\)", value)
-    if not link_match:
-        return html.escape(value)
-
-    before = value[: link_match.start()]
-    after = value[link_match.end() :]
-    label = html.escape(link_match.group(1))
-    url = html.escape(link_match.group(2), quote=True)
-    return (
-        f"{html.escape(before)}"
-        f'<a class="lesson-link" href="{url}" target="_blank" rel="noopener noreferrer">{label}</a>'
-        f"{html.escape(after)}"
-    )
+    link_pattern = re.compile(r"\[([^\]]+)\]\((https://en\.wikipedia\.org/wiki/[^)]+)\)")
+    rendered = []
+    cursor = 0
+    for match in link_pattern.finditer(value):
+        rendered.append(html.escape(value[cursor : match.start()]))
+        label = html.escape(match.group(1))
+        url = html.escape(match.group(2), quote=True)
+        rendered.append(
+            f'<a class="lesson-link" href="{url}" target="_blank" rel="noopener noreferrer">{label}</a>'
+        )
+        cursor = match.end()
+    rendered.append(html.escape(value[cursor:]))
+    return "".join(rendered)
 
 
 def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int) -> None:
