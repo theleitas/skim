@@ -755,33 +755,115 @@ def lesson_text(story: Story, topics: tuple[str, ...]) -> str:
     return "Separate the immediate event from the pattern it reveals. Research the system behind the story before deciding what it means."
 
 
+def story_haystack(story: Story) -> str:
+    return f" {story.title} {story.summary_text} ".lower()
+
+
+def has_any(text: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in text for needle in needles)
+
+
+def context_text(story: Story, topics: tuple[str, ...]) -> str:
+    haystack = story_haystack(story)
+
+    if has_any(haystack, ("hormuz", "iran", "missile", "strike", "war", "defense bill", "military", "nuclear deal")):
+        return (
+            "This is really about the machinery of escalation: military threats, energy routes, alliances, and domestic politics all pressing on each other at once. "
+            "If leaders treat the event as a test of credibility, it can trigger follow-on moves from rivals, shipping disruptions, oil-price anxiety, emergency diplomacy, or new defense spending. "
+            "The larger issue is whether the current international system can contain conflict before symbolic retaliation becomes a cycle."
+        )
+    if has_any(haystack, ("tariff", "trade", "dairy", "supply chain", "imports", "exports", "sanctions")):
+        return (
+            "This story points to how trade policy has become a tool of power rather than just economics. "
+            "A dispute over one sector can trigger retaliation, lobbying at home, price pressure for consumers, and negotiations that spill into unrelated areas like security or immigration. "
+            "The larger pattern is a world moving away from frictionless globalization toward bargaining, protection, and economic nationalism."
+        )
+    if has_any(haystack, ("meta", "social media", "addiction", "algorithm", "platform", "tiktok", "reddit", "online")):
+        return (
+            "This is part of the wider fight over whether digital platforms are neutral tools or environments that shape behavior, politics, and mental health. "
+            "Even a narrow lawsuit or policy change can trigger copycat claims, regulatory hearings, school or family policy shifts, and pressure on companies to reveal how their systems work. "
+            "The bigger question is who should be responsible when software design becomes social infrastructure."
+        )
+    if has_any(haystack, ("earnings", "profit", "alphabet", "google", "ai spending", "cloud", "startup", "semiconductor", "chips")):
+        return (
+            "This is a signal about the economics behind the next technology cycle. "
+            "Investors, competitors, workers, and regulators will read it as evidence for whether heavy spending on AI and infrastructure is turning into durable advantage or just a costly arms race. "
+            "It could trigger more capital spending, consolidation, layoffs, new regulation, or a market repricing of which companies actually control the future stack."
+        )
+    if has_any(haystack, ("climate", "temperature", "heat", "warming", "flood", "drought", "wildfire", "emissions")):
+        return (
+            "This is a glimpse of climate change as a lived systems problem, not just an environmental headline. "
+            "Heat, water stress, migration, food production, insurance, public health, and local economies can all move together when the physical baseline changes. "
+            "The story may trigger adaptation spending or political fights over responsibility, but the larger issue is whether communities can adjust before disruption becomes normal."
+        )
+    if has_any(haystack, ("protest", "censor", "censorship", "rights", "police", "blackmail", "rape", "court", "jailed", "trial")):
+        return (
+            "This is about institutional legitimacy: whether courts, police, governments, or public platforms are trusted to handle power fairly. "
+            "Stories like this can trigger protests, legal reforms, backlash, copycat scrutiny, or a deeper loss of confidence if people see the system protecting itself. "
+            "The larger pattern is a contest over who gets believed, who gets punished, and whether public institutions can still produce shared facts."
+        )
+    if has_any(haystack, ("health", "hospital", "disease", "vaccine", "drug", "medicine", "public health", "outbreak")):
+        return (
+            "This is a stress test for health systems and public trust. "
+            "A single development can change patient behavior, funding priorities, regulation, and how much confidence people place in experts or institutions. "
+            "The bigger issue is whether the system can respond early and transparently, or whether it only moves once personal risk becomes impossible to ignore."
+        )
+    if has_any(haystack, ("hack", "cyber", "data breach", "ransomware", "security flaw", "leak")):
+        return (
+            "This is a reminder that digital security failures are now real-world governance problems. "
+            "One breach can trigger lawsuits, regulation, copycat attacks, insurance changes, and lasting damage to trust between users and institutions. "
+            "The larger issue is that modern life depends on systems most people cannot inspect, but everyone is forced to rely on."
+        )
+    if has_any(haystack, ("louvre", "museum", "jewel", "artifact", "heritage", "art theft")):
+        return (
+            "This is not only a crime story; it is about how societies protect shared memory and public trust. "
+            "A high-profile breach can trigger security overhauls, political blame, insurance changes, and renewed questions about who gets to own or safeguard cultural treasures. "
+            "The larger issue is that symbolic places carry national identity, so failures there feel bigger than the immediate loss."
+        )
+    if story.group == "Social":
+        return (
+            "This is still an early signal, which is exactly why it matters. "
+            "Social attention can reveal something before formal institutions catch up, but it can also distort scale, context, and certainty. "
+            "Watch whether the story crosses into verified reporting, official response, market behavior, or policy debate; that transition is what turns online heat into real-world consequence."
+        )
+    if story.group == "Aggregator":
+        return (
+            "The important clue is that multiple outlets are converging on the same subject at the same time. "
+            "That kind of pickup can turn a story into a feedback loop: politicians respond to coverage, markets or institutions react to the response, and the framing hardens before the full facts settle. "
+            "The larger question is whether this becomes a durable issue or just a burst of attention around a volatile moment."
+        )
+    if "Business" in topics:
+        return (
+            "This is a business story with consequences beyond one company or sector. "
+            "Changes in pricing, demand, labor, capital spending, or regulation can ripple into households and competitors faster than the headline suggests. "
+            "The larger issue is whether this reflects a temporary adjustment or a deeper shift in how value and leverage are moving through the economy."
+        )
+    if "Tech" in topics or "AI" in topics:
+        return (
+            "This is a technology story about control: who builds the tools, who depends on them, and who absorbs the risk when they change. "
+            "It may trigger regulation, new investment, user backlash, or competitive moves from companies trying not to fall behind. "
+            "The bigger pattern is that technical decisions are increasingly becoming labor, privacy, education, and governance decisions."
+        )
+    if "Politics" in topics or "World" in topics or "US" in topics:
+        return (
+            "This sits inside a wider struggle over power, legitimacy, and public trust. "
+            "The event itself may be brief, but the response can set precedents that shape alliances, elections, institutional behavior, or citizen expectations. "
+            "The key question is whether it resolves pressure or reveals that the pressure has been building for a long time."
+        )
+    return (
+        "This story matters most as a signal. "
+        "It may not be world-changing by itself, but it points to incentives, risks, or tensions that could show up again in stronger form. "
+        "The useful move is to ask what system produced it, who benefits if it continues, and what would happen if it spreads."
+    )
+
+
 def summarize(story: Story, detail: int) -> dict[str, str]:
     topics = infer_topics(story)
-    topic_phrase = ", ".join(topics[:3])
-
-    context = (
-        f"Historically, this belongs to the larger {topic_phrase.lower()} pattern: pressure builds, institutions respond, "
-        "and public attention moves faster than the underlying systems can adjust. "
-        "In the near future, watch whether this becomes an isolated episode, a policy or market reaction, "
-        "or the start of a longer argument over accountability and power."
-    )
-    if story.group == "Social":
-        context = (
-            "Historically, social-first stories often begin as weak signals before institutions, journalists, or companies verify the facts. "
-            "In the near future, the key question is whether this stays as online attention or breaks into mainstream coverage, "
-            "policy response, or real-world behavior."
-        )
-    elif story.group == "Aggregator":
-        context = (
-            "Historically, aggregator pickup means several editorial systems are converging on the same subject at once. "
-            "In the near future, watch which framing wins: crisis, opportunity, scandal, market signal, or political turning point."
-        )
-
     wiki_label, wiki_url = wikipedia_topic(story, topics)
 
     return {
         "": happened_summary(story, detail),
-        "Context": context,
+        "Context": context_text(story, topics),
         "Lesson": f"{lesson_text(story, topics)} Learn more: [{wiki_label}]({wiki_url})",
     }
 
