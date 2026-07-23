@@ -207,6 +207,12 @@ def page_style() -> None:
                 margin: 0 0 0.9rem 0;
                 color: var(--skim-ink);
                 max-width: 34rem;
+                max-height: calc(1.22em * 2);
+                overflow: hidden;
+            }
+
+            .story-title-full {
+                max-width: none;
             }
 
             .story-image {
@@ -224,6 +230,7 @@ def page_style() -> None:
                 font-style: italic;
                 line-height: 1.35;
                 margin-top: 0.75rem;
+                margin-bottom: 0.45rem;
             }
 
             .summary-grid {
@@ -683,6 +690,7 @@ def rank_stories(stories: list[Story], keywords: tuple[str, ...] = ()) -> list[R
 
 
 def headline(title: str, max_words: int) -> str:
+    max_words = min(max_words, 10)
     words = clean_headline_source(title).split()
     if len(words) <= max_words:
         return " ".join(words)
@@ -872,6 +880,86 @@ def wikipedia_links(story: Story, topics: tuple[str, ...]) -> tuple[tuple[str, s
     return tuple(unique_links)
 
 
+def is_wikipedia_url(url: str) -> bool:
+    return urllib.parse.urlparse(url).netloc.lower().endswith("wikipedia.org")
+
+
+def google_news_search_link(story: Story) -> tuple[str, str]:
+    query = urllib.parse.quote_plus(clean_headline_source(story.title))
+    return ("Related coverage", f"https://news.google.com/search?q={query}&hl=en-US&gl=US&ceid=US:en")
+
+
+def source_site_link(story: Story) -> tuple[str, str] | None:
+    parsed = urllib.parse.urlparse(story.link)
+    if not parsed.scheme or not parsed.netloc or "wikipedia.org" in parsed.netloc:
+        return None
+    domain = parsed.netloc.removeprefix("www.")
+    if domain in {"news.google.com", "google.com"}:
+        return None
+    return (story.source, f"{parsed.scheme}://{parsed.netloc}")
+
+
+def reference_links(story: Story, topics: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    haystack = story_haystack(story)
+    candidates = (
+        ("AP Russia-Ukraine hub", "https://apnews.com/hub/russia-ukraine", ("ukraine", "russia", "russian", "drone"), 120),
+        ("ISW Ukraine updates", "https://www.understandingwar.org/backgrounder/ukraine-conflict-updates", ("ukraine", "russia", "drone", "war"), 115),
+        ("CFR backgrounders", "https://www.cfr.org/backgrounders", ("war", "diplomacy", "alliance", "geopolitics", "election"), 80),
+        ("Reuters world coverage", "https://www.reuters.com/world/", ("war", "strike", "diplomacy", "government", "election"), 70),
+        ("WTO trade topics", "https://www.wto.org/english/tratop_e/tratop_e.htm", ("tariff", "trade", "imports", "exports"), 115),
+        ("World Bank data", "https://data.worldbank.org/", ("economy", "market", "inflation", "trade", "business"), 80),
+        ("NIST AI resources", "https://www.nist.gov/artificial-intelligence", (" ai ", "artificial intelligence", "model", "algorithm"), 115),
+        ("Stanford AI Index", "https://aiindex.stanford.edu/", (" ai ", "artificial intelligence", "openai", "model"), 110),
+        ("CISA cyber guidance", "https://www.cisa.gov/topics/cybersecurity-best-practices", ("cyber", "hack", "breach", "ransomware"), 120),
+        ("NASA climate", "https://climate.nasa.gov/", ("climate", "warming", "temperature", "heat"), 115),
+        ("IPCC reports", "https://www.ipcc.ch/reports/", ("climate", "emissions", "warming"), 105),
+        ("WHO news", "https://www.who.int/news", ("health", "disease", "vaccine", "outbreak"), 110),
+        ("CDC health topics", "https://www.cdc.gov/health-topics.html", ("health", "disease", "vaccine", "outbreak"), 95),
+        ("UNESCO heritage", "https://www.unesco.org/en/culture", ("museum", "heritage", "artifact", "louvre", "culture"), 110),
+        ("Pew Research", "https://www.pewresearch.org/", ("social media", "platform", "election", "public opinion"), 80),
+    )
+    scored: list[tuple[int, str, str]] = []
+    for label, url, needles, weight in candidates:
+        matches = sum(1 for needle in needles if needle in haystack)
+        if matches:
+            scored.append((weight + (matches * 10), label, url))
+
+    ranked_links = [(label, url) for _, label, url in sorted(scored, reverse=True)]
+    ranked_links.append(google_news_search_link(story))
+    source_link = source_site_link(story)
+    if source_link:
+        ranked_links.append(source_link)
+    if "Business" in topics:
+        ranked_links.append(("Financial Times markets", "https://www.ft.com/markets"))
+    if "Tech" in topics or "AI" in topics:
+        ranked_links.append(("MIT Technology Review", "https://www.technologyreview.com/"))
+    if "Politics" in topics or "World" in topics or "US" in topics:
+        ranked_links.append(("Council on Foreign Relations", "https://www.cfr.org/"))
+
+    unique_links: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for label, url in ranked_links:
+        if url in seen_urls or is_wikipedia_url(url):
+            continue
+        unique_links.append((label, url))
+        seen_urls.add(url)
+        if len(unique_links) == 2:
+            break
+    return tuple(unique_links)
+
+
+def story_learning_links(story: Story, topics: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    links = list(reference_links(story, topics))
+    for fallback in (google_news_search_link(story), source_site_link(story)):
+        if fallback and len(links) < 2 and fallback[1] not in {url for _, url in links}:
+            links.append(fallback)
+    while len(links) < 2:
+        links.append(("Related coverage", "https://news.google.com/topstories?hl=en-US&gl=US&ceid=US:en"))
+
+    wiki_link = wikipedia_links(story, topics)[0]
+    return tuple([*links[:2], wiki_link])
+
+
 def lesson_text(story: Story, topics: tuple[str, ...]) -> str:
     haystack = story_haystack(story)
     if "wildberries" in haystack:
@@ -998,7 +1086,7 @@ def context_text(story: Story, topics: tuple[str, ...]) -> str:
 
 def summarize(story: Story, detail: int) -> dict[str, str]:
     topics = infer_topics(story)
-    links = learning_links_text(wikipedia_links(story, topics))
+    links = learning_links_text(story_learning_links(story, topics))
 
     return {
         "": happened_summary(story, detail),
@@ -1203,9 +1291,11 @@ def ai_summary_cached(
     context is one thoughtful paragraph
     about the larger system, historical pattern, likely follow-on effects, and why this
     event is a signal. lesson is a succinct thing to know, understand, or research next.
-    links is exactly three objects with label and url fields. Choose specific,
-    educational, story-relevant links, preferably Wikipedia pages for the central entity,
-    conflict, institution, technology, geography, or historical pattern.
+    links is exactly three objects with label and url fields. The first two links must
+    be useful non-Wikipedia references tied to the story, such as source pages,
+    official institutions, data/background pages, reputable topic hubs, or related
+    coverage. The third and final link must be one relevant Wikipedia page for the
+    central entity, conflict, institution, technology, geography, or historical pattern.
     """
     return ai_json(provider, model, instructions, prompt, effort="low", max_output_tokens=1300)
 
@@ -1241,14 +1331,17 @@ def ai_deep_analysis_cached(
     stakes, historical echo, who has leverage, who may react, and what future events this
     could trigger. watch_next is one sentence naming the concrete sign that would make
     the story more important. research is one sentence telling the reader what to learn
-    next. links is exactly three objects with label and url fields, chosen for specific
-    learning value and preferably from Wikipedia.
+    next. links is exactly three objects with label and url fields. The first two links
+    must be useful non-Wikipedia references tied to the story, such as source pages,
+    official institutions, data/background pages, reputable topic hubs, or related
+    coverage. The third and final link must be one relevant Wikipedia page.
     """
     return ai_json(provider, model, instructions, prompt, effort="medium", max_output_tokens=1200)
 
 
 def coerce_learning_links(raw_links: object, fallback_links: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
-    links: list[tuple[str, str]] = []
+    raw_non_wiki_links: list[tuple[str, str]] = []
+    raw_wiki_links: list[tuple[str, str]] = []
     if isinstance(raw_links, list):
         for item in raw_links:
             label = ""
@@ -1260,23 +1353,34 @@ def coerce_learning_links(raw_links: object, fallback_links: tuple[tuple[str, st
                 label = str(item[0]).strip()
                 url = str(item[1]).strip()
             if label and url.startswith(("https://", "http://")):
-                links.append((label, url))
+                if is_wikipedia_url(url):
+                    raw_wiki_links.append((label, url))
+                else:
+                    raw_non_wiki_links.append((label, url))
 
-    links.extend(fallback_links)
-    unique_links: list[tuple[str, str]] = []
+    fallback_non_wiki_links = [(label, url) for label, url in fallback_links if not is_wikipedia_url(url)]
+    fallback_wiki_links = [(label, url) for label, url in fallback_links if is_wikipedia_url(url)]
+
+    non_wiki_links: list[tuple[str, str]] = []
     seen_urls: set[str] = set()
-    for label, url in links:
+    for label, url in [*raw_non_wiki_links, *fallback_non_wiki_links]:
         if url in seen_urls:
             continue
-        unique_links.append((label, url))
+        non_wiki_links.append((label, url))
         seen_urls.add(url)
-        if len(unique_links) == 3:
+        if len(non_wiki_links) == 2:
             break
-    return tuple(unique_links)
+
+    wiki_link = (raw_wiki_links + fallback_wiki_links)[0]
+    return tuple([*non_wiki_links[:2], wiki_link])
 
 
 def learning_links_text(links: tuple[tuple[str, str], ...]) -> str:
     return " ".join(f"[{label}]({url})" for label, url in links)
+
+
+def strip_markdown_links(text: str) -> str:
+    return re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r"\1", text)
 
 
 def ensure_three_sentence_summary(summary: str, story: Story, detail: int) -> str:
@@ -1308,7 +1412,7 @@ def smart_summarize(story: Story, detail: int) -> dict[str, str]:
         return summarize(story, detail)
 
     topics = infer_topics(story)
-    fallback_links = wikipedia_links(story, topics)
+    fallback_links = story_learning_links(story, topics)
     try:
         ai_result = ai_summary_cached(
             provider,
@@ -1325,9 +1429,9 @@ def smart_summarize(story: Story, detail: int) -> dict[str, str]:
     except Exception:
         return summarize(story, detail)
 
-    summary = clean_text(str(ai_result.get("summary", "")))
-    context = clean_text(str(ai_result.get("context", "")))
-    lesson = clean_text(str(ai_result.get("lesson", "")))
+    summary = clean_text(strip_markdown_links(str(ai_result.get("summary", ""))))
+    context = clean_text(strip_markdown_links(str(ai_result.get("context", ""))))
+    lesson = clean_text(strip_markdown_links(str(ai_result.get("lesson", ""))))
     links = learning_links_text(coerce_learning_links(ai_result.get("links"), fallback_links))
     summary = ensure_three_sentence_summary(summary, story, detail)
     if not context:
@@ -1344,7 +1448,7 @@ def smart_summarize(story: Story, detail: int) -> dict[str, str]:
 
 def deeper_analysis(story: Story) -> dict[str, str]:
     topics = infer_topics(story)
-    fallback_links = wikipedia_links(story, topics)
+    fallback_links = story_learning_links(story, topics)
     provider = configured_ai_provider()
     if not provider:
         return {
@@ -1364,9 +1468,9 @@ def deeper_analysis(story: Story) -> dict[str, str]:
         topics,
     )
     links = learning_links_text(coerce_learning_links(ai_result.get("links"), fallback_links))
-    analysis = clean_text(str(ai_result.get("analysis", ""))) or context_text(story, topics)
-    watch_next = clean_text(str(ai_result.get("watch_next", "")))
-    research = clean_text(str(ai_result.get("research", ""))) or lesson_text(story, topics)
+    analysis = clean_text(strip_markdown_links(str(ai_result.get("analysis", "")))) or context_text(story, topics)
+    watch_next = clean_text(strip_markdown_links(str(ai_result.get("watch_next", ""))))
+    research = clean_text(strip_markdown_links(str(ai_result.get("research", "")))) or lesson_text(story, topics)
 
     result = {"Deeper analysis": analysis}
     if watch_next:
@@ -1451,8 +1555,9 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
             f"{ranked_story.topic_story_count} {story_word} on this topic"
         )
         st.markdown(f'<div class="story-meta">{html.escape(meta)}</div>', unsafe_allow_html=True)
-        story_title = f'<h2 class="story-title">{html.escape(headline(story.title, max_headline_words))}</h2>'
+        story_title_text = html.escape(headline(story.title, max_headline_words))
         if story.image_url:
+            story_title = f'<h2 class="story-title">{story_title_text}</h2>'
             title_col, image_col = st.columns([3, 1], vertical_alignment="top")
             with title_col:
                 st.markdown(story_title, unsafe_allow_html=True)
@@ -1460,6 +1565,7 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
                 image_url = html.escape(story.image_url, quote=True)
                 st.markdown(f'<img class="story-image" src="{image_url}" alt="">', unsafe_allow_html=True)
         else:
+            story_title = f'<h2 class="story-title story-title-full">{story_title_text}</h2>'
             st.markdown(story_title, unsafe_allow_html=True)
 
         summary = smart_summarize(story, detail)
@@ -1574,7 +1680,8 @@ def main() -> None:
         st.session_state.deep_analyses = {}
     st.session_state.setdefault("selected_topics", ["World", "US", "Politics", "Tech", "AI", "Reddit Hot"])
     st.session_state.setdefault("detail", 3)
-    st.session_state.setdefault("max_headline_words", 13)
+    st.session_state.setdefault("max_headline_words", 10)
+    st.session_state.max_headline_words = min(int(st.session_state.max_headline_words), 10)
     st.session_state.setdefault("include_social", True)
     st.session_state.setdefault("include_aggregators", True)
     st.session_state.setdefault("show_archived", False)
@@ -1633,7 +1740,7 @@ def main() -> None:
         col1, col2 = st.columns(2)
         with col1:
             st.slider("Summary depth", min_value=1, max_value=5, step=1, key="detail")
-            st.slider("Headline words", min_value=8, max_value=16, step=1, key="max_headline_words")
+            st.slider("Headline words", min_value=6, max_value=10, step=1, key="max_headline_words")
         with col2:
             st.toggle("Reddit and Hacker News", key="include_social")
             st.toggle("Google News aggregators", key="include_aggregators")
