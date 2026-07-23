@@ -1,2 +1,5 @@
 streamlit>=1.50
-openai>=2.0.0
+openai>=2.47.0,<3
+trafilatura>=1.12.2,<2.0
+lxml_html_clean>=0.4.3
+googlenewsdecoder==0.1.7

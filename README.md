@@ -1,6 +1,6 @@
 # Skim
 
-Skim is a personal Streamlit news app built around fast headlines, compact summaries, sharing, archiving, and lightweight customization.
+Skim is a personal Streamlit news app built around grounded AI summaries, clean headlines, sharing, archiving, and lightweight customization.
 
 ## Run locally
 
@@ -10,11 +10,14 @@ python3 -m streamlit run app.py
 
 ## OpenAI setup
 
-Skim runs without any AI API key, but OpenAI is the preferred hosted AI path:
+Skim can discover feeds without an AI key, but publishing cards requires an AI provider. OpenAI is the preferred path:
 
-- GPT-5.6 Terra writes the display headline, story summary, Background, and learning links.
+- Skim decodes aggregator links, opens the publisher page, and extracts the main article body before asking OpenAI to write anything.
+- GPT-5.6 Terra writes the display headline, story summary, and Background from that article text.
+- A strict quality check rejects promotional fragments, meta commentary, abrupt headlines, generic Background text, and incomplete prose. One AI repair is attempted before the candidate is skipped.
 - GPT-5.6 Terra runs only when you click a story's Deep analysis button.
-- Article summaries regenerate for each new 15-story refresh so Background stays fresh; repeated reruns of the same batch reuse cached results.
+- A refresh contains 15 main stories plus one additional story for every saved keyword.
+- Stories do not repeat for 24 hours. Repeated reruns of the same batch reuse cached extraction and AI results.
 
 Create an OpenAI API key, then set it before starting Streamlit locally:
 
@@ -32,7 +35,7 @@ SKIM_AI_PROVIDER = "openai"
 
 Do not put API keys in GitHub.
 
-Skim's auto provider order is OpenAI, Gemini, Groq, then xAI. You can force OpenAI with:
+Skim's auto provider order is OpenAI, Gemini, Groq, then xAI. OpenAI is recommended and can be forced with:
 
 ```toml
 SKIM_AI_PROVIDER = "openai"
@@ -46,11 +49,11 @@ GROQ_API_KEY = "your_groq_key_here"
 XAI_API_KEY = "your_xai_key_here"
 ```
 
-OpenAI cost estimates are shown on each article card when OpenAI is active. They are estimates, not exact billing records.
+OpenAI cost estimates are shown on each article card when OpenAI is active. They include a separate note for the optional quality-repair call and are estimates, not exact billing records.
 
 ## Tokens
 
-The news sources are token-free and use public RSS feeds. Without an AI key, Skim uses its local summarizer. X is listed as a future integration because useful official X API access usually requires a developer account and paid access.
+The news discovery sources and article extractor are token-free. An AI key is required to publish cards because Skim no longer falls back to canned local prose. X is listed as a future integration because useful official X API access usually requires a developer account and paid access.
 
 ## Free sources in this version
 

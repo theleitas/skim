@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import streamlit as st
 
@@ -21,13 +21,19 @@ APP_NAME = "Skim"
 BATCH_SIZE = 15
 ITEMS_PER_SOURCE = 50
 FEED_TIMEOUT_SECONDS = 15
-RESEARCH_TIMEOUT_SECONDS = 8
+ARTICLE_TIMEOUT_SECONDS = 15
+ARTICLE_MAX_BYTES = 1_500_000
+ARTICLE_MAX_WORDS = 3_000
+MIN_ARTICLE_WORDS = 160
+MIN_ARTICLE_SENTENCES = 4
+MAX_BASE_CANDIDATES = 40
+MAX_KEYWORD_CANDIDATES = 10
 MIN_SUMMARY_WORDS = 18
 MIN_NEW_SUMMARY_TERMS = 7
-NO_REPEAT_HOURS = 48
+NO_REPEAT_HOURS = 24
 OPENAI_SUMMARY_MODEL = "gpt-5.6-terra"
 OPENAI_DEEP_MODEL = "gpt-5.6-terra"
-AI_SUMMARY_PROMPT_VERSION = "composed-card-v4"
+AI_SUMMARY_PROMPT_VERSION = "grounded-article-v1"
 GEMINI_SUMMARY_MODEL = "gemini-2.5-flash"
 GEMINI_DEEP_MODEL = "gemini-2.5-pro"
 GROQ_SUMMARY_MODEL = "llama-3.3-70b-versatile"
@@ -41,7 +47,13 @@ OPENAI_MODEL_PRICES_PER_MTOK = {
     "gpt-5.6": (5.00, 30.00),
 }
 REQUEST_HEADERS = {
-    "User-Agent": "SkimPersonalNews/0.1 (+https://github.com/theleitas)",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0 Safari/537.36 SkimPersonalNews/1.0"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.8",
 }
 
 
@@ -73,6 +85,21 @@ class RankedStory:
     references: int
     topic_story_count: int
     score: float
+
+
+@dataclass(frozen=True)
+class ArticleEvidence:
+    url: str
+    title: str
+    text: str
+    word_count: int
+
+
+@dataclass(frozen=True)
+class PreparedStory:
+    ranked_story: RankedStory
+    evidence: ArticleEvidence
+    card: dict[str, str]
 
 
 TOPICS = {
@@ -212,15 +239,16 @@ def page_style() -> None:
             }
 
             .story-title {
-                font-size: clamp(0.82rem, 1.2vw, 0.96rem);
-                line-height: 1.5;
-                margin: 0 0 0.85rem 0;
+                font-size: 1.45rem;
+                line-height: 1.24;
+                margin: 0 0 1rem 0;
                 color: var(--skim-ink);
                 max-width: 34rem;
                 display: -webkit-box;
                 -webkit-box-orient: vertical;
-                -webkit-line-clamp: 3;
+                -webkit-line-clamp: 2;
                 overflow: hidden;
+                overflow-wrap: anywhere;
             }
 
             .story-title-full {
@@ -368,6 +396,13 @@ def page_style() -> None:
                 border: 1px solid #2c2823;
                 border-radius: 8px;
             }
+
+            @media (max-width: 640px) {
+                .story-title {
+                    font-size: 1.2rem;
+                    line-height: 1.28;
+                }
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -381,14 +416,6 @@ def clean_text(value: str | None) -> str:
     text = html.unescape(text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
-
-
-def clean_page_text(value: str | None) -> str:
-    if not value:
-        return ""
-    text = re.sub(r"(?is)<(script|style|noscript|svg|nav|footer|header|form)[^>]*>.*?</\1>", " ", value)
-    text = re.sub(r"(?i)</(p|h1|h2|h3|li|div)>", ". ", text)
-    return clean_text(text)
 
 
 def parse_date(value: str | None) -> datetime | None:
@@ -466,6 +493,13 @@ def child_image(parent: ET.Element, summary_html: str) -> str | None:
 def stable_id(source_name: str, title: str, link: str) -> str:
     raw = f"{source_name}|{title}|{link}".lower()
     return re.sub(r"[^a-z0-9]+", "-", raw).strip("-")[:96]
+
+
+def is_google_news_url(url: str) -> bool:
+    try:
+        return urllib.parse.urlparse(url).netloc.lower() == "news.google.com"
+    except ValueError:
+        return False
 
 
 def normalize_word(word: str) -> str:
@@ -587,16 +621,17 @@ def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
         title = child_text(entry, ("title",))
         link = child_link(entry)
         summary_raw = child_raw_text(entry, ("description", "summary", "content", "encoded"))
-        summary = clean_text(summary_raw)
+        publisher = child_text(entry, ("source",))
+        google_news_item = is_google_news_url(link)
+        summary = "" if google_news_item else clean_text(summary_raw)
         date_text = child_text(entry, ("pubDate", "published", "updated"))
         if not title or not link:
             continue
-        if not has_enough_reported_material(title, summary):
-            continue
+        story_source = publisher or source.name
         stories.append(
             Story(
-                id=stable_id(source.name, title, link),
-                source=source.name,
+                id=stable_id(story_source, title, link),
+                source=story_source,
                 group=source.group,
                 title=title,
                 link=link,
@@ -728,7 +763,8 @@ def persist_keywords_to_query_params() -> None:
 
 def complete_story_refresh() -> None:
     fetch_source.clear()
-    fetch_research_snippet.clear()
+    resolve_article_url.clear()
+    fetch_article_evidence.clear()
     st.session_state.current_cluster_keys = []
     st.session_state.last_settings = None
     st.session_state.deep_analyses = {}
@@ -760,6 +796,18 @@ def story_score(story: Story, references: int, cluster_size: int, keywords: tupl
     return (references * 18.0) + (cluster_size * 8.0) + recency_score + group_weight + keyword_boost
 
 
+def representative_quality(story: Story) -> tuple[int, int, int]:
+    direct_publisher_link = int(not is_google_news_url(story.link))
+    substantial_feed_text = int(has_enough_reported_material(story.title, story.summary_text))
+    source_priority = {
+        "Major News": 4,
+        "Social": 3,
+        "Aggregator": 2,
+        "Custom": 1,
+    }.get(story.group, 0)
+    return direct_publisher_link, substantial_feed_text, source_priority
+
+
 def rank_stories(stories: list[Story], keywords: tuple[str, ...] = ()) -> list[RankedStory]:
     ranked: list[RankedStory] = []
     for cluster in cluster_stories(stories):
@@ -773,7 +821,10 @@ def rank_stories(stories: list[Story], keywords: tuple[str, ...] = ()) -> list[R
         )
         representative = max(
             cluster,
-            key=lambda story: story_score(story, references=references, cluster_size=len(cluster), keywords=keywords),
+            key=lambda story: (
+                representative_quality(story),
+                story_score(story, references=references, cluster_size=len(cluster), keywords=keywords),
+            ),
         )
         tokens = story_tokens(representative)
         ranked.append(
@@ -788,40 +839,6 @@ def rank_stories(stories: list[Story], keywords: tuple[str, ...] = ()) -> list[R
 
     ranked.sort(key=lambda item: item.score, reverse=True)
     return ranked
-
-
-def headline(title: str, max_words: int) -> str:
-    return clean_headline_source(title)
-
-
-def sensible_display_headline(candidate: str, story: Story) -> str:
-    candidate = clean_headline_source(candidate)
-    candidate = candidate.replace("...", "").strip(" -:;,.")
-    if not candidate or len(candidate.split()) < 4:
-        candidate = clean_headline_source(story.title)
-
-    words = candidate.split()
-    if len(words) <= 14:
-        return " ".join(words)
-
-    phrase_breaks = {"after", "as", "amid", "while", "over", "following", "despite", "because"}
-    for index in range(min(14, len(words) - 1), 7, -1):
-        if words[index].lower().strip(",:;") in phrase_breaks:
-            return " ".join(words[:index]).rstrip(",:;")
-
-    punctuation_text = " ".join(words[:16])
-    punctuation_match = re.match(r"^(.{30,95}?)[,:;]\s", punctuation_text)
-    if punctuation_match and len(punctuation_match.group(1).split()) >= 6:
-        return punctuation_match.group(1).rstrip(",:;")
-    return " ".join(words[:12]).rstrip(",:;")
-
-
-def excerpt(text: str, width: int) -> str:
-    shortened = textwrap.shorten(clean_text(text), width=width, placeholder="")
-    shortened = shortened.rstrip(" ,;:")
-    if shortened and shortened[-1] not in ".!?":
-        shortened += "."
-    return shortened
 
 
 def split_sentences(text: str) -> list[str]:
@@ -854,39 +871,6 @@ def is_weak_summary(text: str) -> bool:
     return normalized.startswith(("comments url", "article url", "submitted by"))
 
 
-def happened_summary(story: Story, detail: int) -> str:
-    title_summary = clean_headline_source(story.title)
-    if story.group == "Aggregator":
-        return (
-            f"{excerpt(title_summary, width=220)} "
-            f"The key fact is that multiple outlets or feeds are giving this subject attention right now. "
-            f"Read the full story to separate the confirmed details from the fast-moving headline framing."
-        )
-
-    useful_sentences = [sentence for sentence in split_sentences(story.summary_text) if not is_weak_summary(sentence)]
-    if not useful_sentences:
-        return (
-            f"{excerpt(title_summary, width=220)} "
-            f"The feed did not provide a strong summary, so the headline is the clearest confirmed signal. "
-            f"Use the full story link for names, dates, quotes, and details before treating the item as settled."
-        )
-
-    happened_sentences = useful_sentences[:3]
-    while len(happened_sentences) < 3:
-        if len(happened_sentences) == 1:
-            happened_sentences.append(
-                "The immediate importance is that the event has broken through enough to be surfaced by a major feed."
-            )
-        else:
-            happened_sentences.append(
-                "The full story will matter for the specific people, institutions, and decisions behind the headline."
-            )
-    happened = " ".join(happened_sentences)
-    if is_weak_summary(happened):
-        happened = title_summary
-    return excerpt(happened, width=620)
-
-
 def infer_topics(story: Story) -> tuple[str, ...]:
     headline_text = f" {story.title} ".lower()
     haystack = f"{headline_text} {story.summary_text} ".lower()
@@ -899,29 +883,6 @@ def infer_topics(story: Story) -> tuple[str, ...]:
         if headline_match or body_match_count >= 2:
             matches.append(topic)
     return tuple(matches[:4]) or story.topics[:2]
-
-
-def why_theme(story: Story, topics: tuple[str, ...]) -> str:
-    headline_text = f" {story.title} ".lower()
-    if "Business" in topics and (
-        "Business" in story.topics
-        or any(word in headline_text for word in ("market", "earnings", "company", "trade", "economy"))
-    ):
-        return "business"
-    if ("AI" in topics or "Tech" in topics) and (
-        "AI" in story.topics
-        or "Tech" in story.topics
-        or any(word in headline_text for word in ("ai", "technology", "software", "chip", "cyber"))
-    ):
-        return "technology"
-    if "Health" in topics and (
-        "Health" in story.topics
-        or any(word in headline_text for word in ("health", "hospital", "medicine", "drug", "disease", "vaccine"))
-    ):
-        return "health"
-    if "World" in topics or "Politics" in topics or "US" in topics:
-        return "politics"
-    return "general"
 
 
 def wikipedia_links(story: Story, topics: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
@@ -1079,220 +1040,172 @@ def story_learning_links(story: Story, topics: tuple[str, ...]) -> tuple[tuple[s
     return tuple([*links[:2], wiki_link])
 
 
-def extract_research_snippet(page_html: str, max_chars: int = 900) -> str:
-    description_match = re.search(
-        r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\']([^"\']+)["\']',
-        page_html,
-        flags=re.IGNORECASE,
-    )
-    snippets: list[str] = []
-    if description_match:
-        snippets.append(clean_text(description_match.group(1)))
+ARTICLE_BOILERPLATE_MARKERS = (
+    "sign up for",
+    "sign up to",
+    "subscribe to",
+    "subscribe for",
+    "newsletter",
+    "email address",
+    "privacy policy",
+    "cookie policy",
+    "accept cookies",
+    "all rights reserved",
+    "follow us on",
+    "share this article",
+    "full story",
+    "read more:",
+    "related article",
+    "advertisement",
+)
 
-    paragraph_matches = re.findall(r"(?is)<p[^>]*>(.*?)</p>", page_html)
-    for paragraph_html in paragraph_matches[:8]:
-        paragraph = clean_page_text(paragraph_html)
-        if len(paragraph.split()) >= 12:
-            snippets.append(paragraph)
-        if len(" ".join(snippets)) >= max_chars:
+
+def article_line_is_boilerplate(line: str) -> bool:
+    normalized = clean_text(line).lower()
+    if not normalized:
+        return True
+    if any(marker in normalized for marker in ARTICLE_BOILERPLATE_MARKERS):
+        return True
+    return len(normalized.split()) < 4
+
+
+def sanitize_article_text(raw_text: str, max_words: int = ARTICLE_MAX_WORDS) -> str:
+    kept_lines: list[str] = []
+    seen_lines: set[str] = set()
+    raw_lines = [line for line in raw_text.splitlines() if clean_text(line)]
+    if len(raw_lines) <= 1:
+        raw_lines = split_sentences(raw_text)
+    for raw_line in raw_lines:
+        line = clean_text(raw_line)
+        if article_line_is_boilerplate(line):
+            continue
+        normalized = normalized_story_text(line)
+        if normalized in seen_lines:
+            continue
+        seen_lines.add(normalized)
+        kept_lines.append(line)
+
+    combined = " ".join(kept_lines)
+    sentences = split_sentences(combined)
+    selected: list[str] = []
+    selected_words = 0
+    for sentence in sentences:
+        sentence_words = len(sentence.split())
+        if selected and selected_words + sentence_words > max_words:
             break
+        selected.append(sentence)
+        selected_words += sentence_words
+    return " ".join(selected)
 
-    if not snippets:
-        snippets.append(clean_page_text(page_html[:20000]))
-    return excerpt(" ".join(snippets), width=max_chars)
+
+def extract_json_ld_article_body(page_html: str) -> str:
+    bodies: list[str] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            body = value.get("articleBody")
+            if isinstance(body, str):
+                bodies.append(body)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    scripts = re.findall(
+        r'(?is)<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        page_html,
+    )
+    for script in scripts:
+        try:
+            visit(json.loads(html.unescape(script).strip()))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return max(bodies, key=len, default="")
+
+
+def extract_main_article_text(page_html: str, article_url: str) -> str:
+    from trafilatura import extract
+
+    extracted = extract(
+        page_html,
+        url=article_url,
+        output_format="txt",
+        include_comments=False,
+        include_tables=False,
+        favor_precision=True,
+        deduplicate=True,
+    ) or ""
+    json_ld_body = extract_json_ld_article_body(page_html)
+    if len(json_ld_body.split()) > len(extracted.split()):
+        extracted = json_ld_body
+    return sanitize_article_text(extracted)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_research_snippet(url: str) -> str:
-    if not url.startswith(("https://", "http://")):
-        return ""
-    request = urllib.request.Request(url, headers=REQUEST_HEADERS)
+def resolve_article_url(url: str) -> str:
+    if not is_google_news_url(url):
+        return url
     try:
-        with urllib.request.urlopen(request, timeout=RESEARCH_TIMEOUT_SECONDS) as response:
-            content_type = response.headers.get("Content-Type", "")
-            if "text/html" not in content_type and "application/xhtml" not in content_type:
-                return ""
-            page_bytes = response.read(250_000)
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        from googlenewsdecoder import gnewsdecoder
+
+        result = gnewsdecoder(url)
+    except Exception:
         return ""
-
-    page_html = page_bytes.decode("utf-8", errors="ignore")
-    return extract_research_snippet(page_html)
-
-
-def research_notes(story: Story, topics: tuple[str, ...]) -> str:
-    candidate_links = [("Article page", story.link), *story_learning_links(story, topics)[:2]]
-    notes: list[str] = []
-    seen_urls: set[str] = set()
-    for label, url in candidate_links:
-        if not url or url in seen_urls:
-            continue
-        seen_urls.add(url)
-        snippet = fetch_research_snippet(url)
-        if snippet:
-            notes.append(f"{label}: {snippet}")
-        if len(notes) == 3:
-            break
-    return "\n".join(notes)
+    if isinstance(result, dict) and result.get("status"):
+        decoded_url = str(result.get("decoded_url", "")).strip()
+        if decoded_url.startswith(("https://", "http://")):
+            return decoded_url
+    return ""
 
 
-def lesson_text(story: Story, topics: tuple[str, ...]) -> str:
-    haystack = story_haystack(story)
-    if "wildberries" in haystack:
-        return "Know that the war is reaching Russia's private logistics and consumer economy, not just military targets; research how e-commerce, warehouses, and drone warfare have become part of modern conflict."
-    theme = why_theme(story, topics)
-    if theme == "health":
-        return "Know how this changes risk, access, and trust. Research which institutions are responsible and what evidence they are using."
-    if theme == "business":
-        return "Watch the second-order effects: prices, jobs, supply chains, and bargaining power often matter more than the first headline."
-    if theme == "technology":
-        return "Look for who gains leverage from the technology shift: users, companies, governments, workers, or the systems that connect them."
-    if theme == "politics":
-        return "Track the precedent, not just the event. The durable lesson is often how power responds under pressure."
-    return "Separate the immediate event from the pattern it reveals. Research the system behind the story before deciding what it means."
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_article_evidence(url: str, expected_title: str) -> ArticleEvidence | None:
+    article_url = resolve_article_url(url)
+    if not article_url.startswith(("https://", "http://")):
+        return None
+
+    request = urllib.request.Request(article_url, headers=REQUEST_HEADERS)
+    try:
+        with urllib.request.urlopen(request, timeout=ARTICLE_TIMEOUT_SECONDS) as response:
+            content_type = response.headers.get("Content-Type", "").lower()
+            if "html" not in content_type:
+                return None
+            charset = response.headers.get_content_charset() or "utf-8"
+            page_bytes = response.read(ARTICLE_MAX_BYTES)
+            final_url = response.geturl()
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+        return None
+
+    page_html = page_bytes.decode(charset, errors="ignore")
+    try:
+        article_text = extract_main_article_text(page_html, final_url)
+    except (ImportError, ValueError, TypeError):
+        return None
+
+    evidence = ArticleEvidence(
+        url=final_url,
+        title=clean_headline_source(expected_title),
+        text=article_text,
+        word_count=len(article_text.split()),
+    )
+    return evidence if article_evidence_is_sufficient(evidence) else None
+
+
+def article_evidence_is_sufficient(evidence: ArticleEvidence | None) -> bool:
+    if not evidence or evidence.word_count < MIN_ARTICLE_WORDS:
+        return False
+    if sentence_count(evidence.text) < MIN_ARTICLE_SENTENCES:
+        return False
+
+    title_terms = set(significant_words(evidence.title))
+    body_terms = set(significant_words(evidence.text))
+    required_overlap = min(2, len(title_terms))
+    return required_overlap == 0 or len(title_terms.intersection(body_terms)) >= required_overlap
 
 
 def story_haystack(story: Story) -> str:
     return f" {story.title} {story.summary_text} ".lower()
-
-
-def has_any(text: str, needles: tuple[str, ...]) -> bool:
-    return any(needle in text for needle in needles)
-
-
-def context_subject(story: Story) -> str:
-    title = clean_headline_source(story.title)
-    title = re.sub(r"^(live|updates?|breaking|watch)\s*[:|-]\s*", "", title, flags=re.IGNORECASE)
-    title = re.sub(r"\s+", " ", title).strip(" .")
-    words = title.split()
-    if len(words) > 16:
-        title = " ".join(words[:16]).rstrip(",:;")
-    return title or "this story"
-
-
-def context_text(story: Story, topics: tuple[str, ...]) -> str:
-    haystack = story_haystack(story)
-    subject = context_subject(story)
-
-    if "wildberries" in haystack:
-        return (
-            "This is a sign that the Russia-Ukraine war is pushing deeper into the infrastructure of ordinary economic life. "
-            "Wildberries is not just a retailer; it represents logistics, warehousing, consumer access, and the private-sector systems Russians rely on every day. "
-            "If attacks like this continue, they could pressure insurers, landlords, delivery networks, regional officials, and business owners, while signaling that Ukraine wants the costs of war felt inside Russia's domestic economy."
-        )
-    if has_any(haystack, ("ebola", "mpox", "measles", "cholera", "outbreak", "epidemic")):
-        return (
-            f"{subject} is mainly a test of outbreak control: surveillance, contact tracing, isolation, vaccination, safe burials, and public trust have to move faster than the disease. "
-            "In places with fragile health systems, conflict, displacement, or weak transportation networks, even a localized outbreak can become a regional stress signal because patients, families, and health workers cross administrative borders. "
-            "The next thing to watch is whether authorities contain transmission chains quickly or whether rising deaths start changing travel behavior, aid flows, school activity, and confidence in public-health institutions."
-        )
-    if has_any(haystack, ("hormuz", "iran", "missile", "strike", "war", "defense bill", "military", "nuclear deal")):
-        return (
-            f"{subject} sits inside the machinery of escalation: military signaling, domestic politics, alliances, and economic exposure all press on each other at once. "
-            "The immediate event matters less than how rivals interpret it; if either side treats the moment as a credibility test, it can trigger retaliatory moves, emergency diplomacy, shipping or energy anxiety, and new pressure on allied governments. "
-            "The larger question is whether institutions and back channels can absorb the shock before symbolic retaliation becomes a self-sustaining cycle."
-        )
-    if has_any(haystack, ("tariff", "trade", "dairy", "supply chain", "imports", "exports", "sanctions")):
-        return (
-            f"{subject} points to trade policy becoming a bargaining weapon, not just an economic rulebook. "
-            "A fight that starts with one product or sector can spread into retaliation, domestic lobbying, price pressure, and negotiations over unrelated issues such as security, migration, industrial policy, or access to strategic materials. "
-            "The broader pattern is a world moving away from frictionless globalization toward managed trade, national leverage, and a more political supply chain."
-        )
-    if has_any(haystack, ("meta", "social media", "addiction", "algorithm", "platform", "tiktok", "reddit", "online")):
-        return (
-            f"{subject} is part of the fight over whether platforms are neutral tools or environments that actively shape behavior, politics, and mental health. "
-            "Even a narrow lawsuit, policy change, or viral controversy can trigger copycat claims, regulatory hearings, advertiser pressure, school or family rule changes, and demands that companies reveal how their ranking systems work. "
-            "The bigger issue is responsibility: when software becomes social infrastructure, design choices start looking less like product tweaks and more like governance decisions."
-        )
-    if has_any(haystack, ("earnings", "profit", "alphabet", "google", "ai spending", "cloud", "startup", "semiconductor", "chip", "chips")):
-        return (
-            f"{subject} is a signal about who can afford the next technology cycle and who is being priced into dependency. "
-            "Investors, competitors, workers, and regulators will read the news as evidence for whether spending on AI, cloud, chips, or software infrastructure is producing durable advantage or simply feeding a costly arms race. "
-            "The follow-on effects could include more capital spending, consolidation, layoffs, antitrust scrutiny, or a market repricing of which companies actually control the stack."
-        )
-    if has_any(haystack, ("climate", "temperature", "heat", "warming", "flood", "drought", "wildfire", "emissions")):
-        return (
-            f"{subject} is climate showing up as a systems problem rather than a single environmental headline. "
-            "Heat, water stress, migration, food production, insurance, public health, and local budgets can all move together when the physical baseline changes. "
-            "The story may trigger adaptation spending or political fights over responsibility, but the deeper issue is whether communities can adjust before disruption becomes part of normal planning."
-        )
-    if has_any(haystack, ("supreme court", "court ruling", "election law", "constitutional", "judicial")):
-        return (
-            f"{subject} is about how legal decisions become operating rules for politics, institutions, and ordinary civic life. "
-            "Court rulings can outlast the immediate dispute because they change what future actors are allowed to do, how states or agencies design policy, and what strategies interest groups pursue next. "
-            "The larger question is whether the decision settles a conflict or simply moves the fight into legislatures, campaigns, administrative agencies, and future litigation."
-        )
-    if has_any(haystack, ("protest", "censor", "censorship", "rights", "police", "blackmail", "rape", "jailed", "trial")):
-        return (
-            f"{subject} is really about institutional legitimacy: whether courts, police, governments, or public platforms are trusted to handle power fairly. "
-            "Cases like this can trigger protests, legal reforms, backlash, copycat scrutiny, or a deeper loss of confidence if people see the system protecting itself instead of producing accountability. "
-            "The larger pattern is a contest over who gets believed, who gets punished, and whether public institutions can still create shared facts."
-        )
-    if has_any(haystack, ("health", "hospital", "disease", "vaccine", "drug", "medicine", "public health", "outbreak")):
-        return (
-            f"{subject} is a stress test for the health system around evidence, capacity, cost, and public trust. "
-            "A single development can change patient behavior, funding priorities, regulation, insurance decisions, and how much confidence people place in experts or institutions. "
-            "The bigger issue is whether the system can respond early and transparently or whether it only moves once personal risk becomes impossible to ignore."
-        )
-    if has_any(haystack, ("hack", "cyber", "data breach", "ransomware", "security flaw", "leak")):
-        return (
-            f"{subject} shows how digital security failures have become real-world governance problems. "
-            "A breach, flaw, or attack can trigger lawsuits, regulation, copycat operations, insurance changes, and lasting damage to trust between users and institutions. "
-            "The larger issue is that modern life depends on systems most people cannot inspect but everyone is forced to rely on."
-        )
-    if has_any(haystack, ("louvre", "museum", "jewel", "artifact", "heritage", "art theft")):
-        return (
-            f"{subject} is not only a crime or culture story; it is about how societies protect shared memory and public trust. "
-            "A high-profile loss or breach can trigger security overhauls, political blame, insurance changes, and renewed questions about who gets to own or safeguard cultural treasures. "
-            "The larger issue is that symbolic places carry national identity, so failures there feel bigger than the immediate damage."
-        )
-    if "Business" in topics:
-        return (
-            f"{subject} is a business story with consequences beyond one company or sector. "
-            "Changes in pricing, demand, labor, capital spending, or regulation can ripple into households, suppliers, workers, and competitors faster than the headline suggests. "
-            "The larger issue is whether this is a temporary adjustment or a deeper shift in where value and leverage are moving through the economy."
-        )
-    if "Tech" in topics or "AI" in topics:
-        return (
-            f"{subject} is a technology story about control: who builds the tools, who depends on them, and who absorbs the risk when they change. "
-            "It may trigger regulation, new investment, user backlash, or competitive moves from companies trying not to fall behind. "
-            "The bigger pattern is that technical decisions are increasingly becoming labor, privacy, education, and governance decisions."
-        )
-    if "Politics" in topics or "World" in topics or "US" in topics:
-        return (
-            f"{subject} sits inside a wider struggle over power, legitimacy, and public trust. "
-            "The event itself may be brief, but the response can set precedents that shape alliances, elections, institutional behavior, or citizen expectations. "
-            "The key question is whether it resolves pressure or reveals that the pressure has been building for a long time."
-        )
-    if story.group == "Social":
-        return (
-            f"{subject} is still an early signal, which is exactly why it needs careful reading. "
-            "Social attention can reveal something before formal institutions catch up, but it can also distort scale, context, and certainty. "
-            "Watch whether the story crosses into verified reporting, official response, market behavior, or policy debate; that transition is what turns online heat into real-world consequence."
-        )
-    if story.group == "Aggregator":
-        return (
-            f"{subject} matters because multiple outlets are converging on the same subject at the same time. "
-            "That pickup can turn a story into a feedback loop: officials respond to coverage, institutions react to the response, and the framing can harden before all the facts settle. "
-            "The question to watch is whether the coverage leads to measurable action, changed behavior, or official confirmation, or whether it fades as a burst of attention around a volatile moment."
-        )
-    return (
-        f"{subject} matters most as a signal of incentives, risks, or tensions that may show up again in stronger form. "
-        "It may not be world-changing by itself, but the surrounding reaction can reveal who has leverage, who is exposed, and which institutions are expected to respond. "
-        "The useful move is to ask what system produced the story, who benefits if the pattern continues, and what would happen if it spreads."
-    )
-
-
-def summarize(story: Story, detail: int) -> dict[str, str]:
-    topics = infer_topics(story)
-    links = learning_links_text(story_learning_links(story, topics))
-
-    return {
-        "__headline": headline(story.title, 0),
-        "": happened_summary(story, detail),
-        "Background": context_text(story, topics),
-        "Learn More": f"Learn more: {links}",
-    }
 
 
 def secret_or_env(name: str) -> str:
@@ -1334,7 +1247,7 @@ def ai_provider_label() -> str:
         "xai": "xAI Grok",
         "openai": "OpenAI GPT-5.6",
     }
-    return labels.get(configured_ai_provider(), "Free feeds / local summaries")
+    return labels.get(configured_ai_provider(), "OpenAI key needed")
 
 
 def ai_model(provider: str, deep: bool) -> str:
@@ -1371,7 +1284,7 @@ def format_cost(value: float) -> str:
     return f"${value:.2f}"
 
 
-def openai_cost_note(story: Story, research_text: str) -> str:
+def openai_cost_note(story: Story, article_text: str) -> str:
     if configured_ai_provider() != "openai":
         return ""
 
@@ -1379,10 +1292,10 @@ def openai_cost_note(story: Story, research_text: str) -> str:
     summary_input_tokens = estimated_token_count(
         story.title,
         story.summary_text,
-        research_text,
+        article_text,
         overhead_tokens=850,
     )
-    summary_output_tokens = 950
+    summary_output_tokens = 1_500
     summary_cost = openai_cost(summary_model, summary_input_tokens, summary_output_tokens)
     if summary_cost is None:
         return ""
@@ -1391,13 +1304,16 @@ def openai_cost_note(story: Story, research_text: str) -> str:
     deep_input_tokens = estimated_token_count(
         story.title,
         story.summary_text,
-        research_text,
+        article_text,
         overhead_tokens=520,
     )
-    deep_output_tokens = 700
+    deep_output_tokens = 1_500
     deep_cost = openai_cost(deep_model, deep_input_tokens, deep_output_tokens)
     deep_note = f" · deep if clicked ~{format_cost(deep_cost)}" if deep_cost is not None else ""
-    return f"AI estimate: article ~{format_cost(summary_cost)}{deep_note}"
+    return (
+        f"AI estimate: article ~{format_cost(summary_cost)}"
+        f" · quality retry, only if needed, adds about the same{deep_note}"
+    )
 
 
 def parse_openai_json(raw_text: str) -> dict:
@@ -1413,6 +1329,29 @@ def parse_openai_json(raw_text: str) -> dict:
             return json.loads(match.group(0))
         except json.JSONDecodeError:
             return {}
+
+
+SUMMARY_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "headline": {"type": "string"},
+        "summary": {"type": "string"},
+        "background": {"type": "string"},
+    },
+    "required": ["headline", "summary", "background"],
+    "additionalProperties": False,
+}
+
+DEEP_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "analysis": {"type": "string"},
+        "watch_next": {"type": "string"},
+        "research": {"type": "string"},
+    },
+    "required": ["analysis", "watch_next", "research"],
+    "additionalProperties": False,
+}
 
 
 def post_json(url: str, headers: dict[str, str], payload: dict) -> dict:
@@ -1467,7 +1406,15 @@ def chat_completions_json(
     return parse_openai_json(raw_text)
 
 
-def openai_json(model: str, instructions: str, prompt: str, effort: str, max_output_tokens: int) -> dict:
+def openai_json(
+    model: str,
+    instructions: str,
+    prompt: str,
+    effort: str,
+    max_output_tokens: int,
+    schema_name: str,
+    schema: dict,
+) -> dict:
     from openai import OpenAI
 
     client = OpenAI(api_key=openai_api_key())
@@ -1476,13 +1423,30 @@ def openai_json(model: str, instructions: str, prompt: str, effort: str, max_out
         instructions=instructions,
         input=prompt,
         reasoning={"effort": effort},
-        text={"format": {"type": "json_object"}},
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": schema_name,
+                "strict": True,
+                "schema": schema,
+            },
+            "verbosity": "medium",
+        },
         max_output_tokens=max_output_tokens,
     )
     return parse_openai_json(getattr(response, "output_text", ""))
 
 
-def ai_json(provider: str, model: str, instructions: str, prompt: str, effort: str, max_output_tokens: int) -> dict:
+def ai_json(
+    provider: str,
+    model: str,
+    instructions: str,
+    prompt: str,
+    effort: str,
+    max_output_tokens: int,
+    schema_name: str,
+    schema: dict,
+) -> dict:
     if provider == "gemini":
         return gemini_json(model, instructions, prompt, max_output_tokens)
     if provider == "groq":
@@ -1503,7 +1467,7 @@ def ai_json(provider: str, model: str, instructions: str, prompt: str, effort: s
             prompt,
             max_output_tokens,
         )
-    return openai_json(model, instructions, prompt, effort, max_output_tokens)
+    return openai_json(model, instructions, prompt, effort, max_output_tokens, schema_name, schema)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -1516,50 +1480,114 @@ def ai_summary_cached(
     title: str,
     source: str,
     group: str,
-    summary_text: str,
-    link: str,
+    rss_summary: str,
+    article_url: str,
+    article_text: str,
     topics: tuple[str, ...],
     detail: int,
-    research_text: str,
 ) -> dict:
     prompt = textwrap.dedent(
         f"""
-        Source: {source}
-        Source type: {group}
-        Topics: {", ".join(topics)}
-        Headline: {clean_headline_source(title)}
-        RSS summary: {clean_text(summary_text) or "No useful RSS summary was provided."}
-        Full story URL: {link}
-        Desired detail level: {detail}/5
-        Stable story id: {story_id}
-        Story refresh key: {refresh_key}
-        Prompt version: {prompt_version}
-        Research notes gathered at refresh time:
-        {research_text or "No additional research notes were available; use the RSS material carefully."}
+        PUBLISHER: {source}
+        SOURCE TYPE: {group}
+        TOPICS: {", ".join(topics)}
+        PUBLISHER HEADLINE: {clean_headline_source(title)}
+        RSS DESCRIPTION: {clean_text(rss_summary) or "Not available."}
+        PUBLISHER URL: {article_url}
+        DESIRED DETAIL: {detail}/5
+
+        <ARTICLE_BODY>
+        {article_text}
+        </ARTICLE_BODY>
         """
     ).strip()
     instructions = """
-    You are Skim, a sharp personal news analyst. Use the provided headline, source,
-    RSS summary, URL, topic labels, and refresh-time research notes; do not invent facts.
-    Return valid JSON with:
-    headline, summary, background, and links. headline is a complete, natural headline
-    of 6-12 words; it must not end abruptly and must not use ellipses. summary is 4-5
-    well-written sentences explaining what happened in plain English, never the word
-    "comments", and never just a headline. Write with calm authority and useful detail,
-    not filler. background is one smart, specific paragraph that teaches the backstory
-    and perspective behind this exact story: why it is important, what history or prior
-    tension makes it news, who has leverage, what could happen next, and what larger
-    stress or change it may reveal. Use the research notes to add specificity when they
-    are available. Do not use generic reusable background. Name or clearly refer to the
-    story's central subject, place, institution, company, disease, technology, market,
-    or conflict.
-    links is exactly three objects with label and url fields. The first two links must
-    be useful non-Wikipedia references tied to the story, such as source pages,
-    official institutions, data/background pages, reputable topic hubs, or related
-    coverage. The third and final link must be one relevant Wikipedia page for the
-    central entity, conflict, institution, technology, geography, or historical pattern.
+    You are the editor of Skim. Read the supplied publisher article body closely before
+    writing. The current event facts must come from that body. You may use reliable
+    general knowledge only to explain established background or cautious implications,
+    never to add unreported current-event facts.
+
+    Return the required JSON fields:
+    - headline: 5-10 words and no more than 78 characters. State the central development as a complete, natural thought.
+      Keep names, places, and stakes that make it meaningful. No ellipses, label, teaser,
+      clickbait, dangling preposition, or abrupt truncation.
+    - summary: 3-4 cohesive sentences and 65-150 words. Explain who did what, where and
+      when relevant, the strongest specifics or numbers, and the immediate consequence.
+      Synthesize the body instead of copying its opening. Every sentence must add a fact
+      or a concrete implication.
+    - background: 2-3 cohesive sentences and 45-125 words. Explain the specific backstory,
+      institutional setting, historical pressure, or connected event that makes this
+      development significant. End with a disciplined assessment of what it could change
+      or what concrete development to watch. Mark uncertain consequences with may, could,
+      or would.
+
+    Write only publishable news prose. Never refer to "the article," "this article,"
+    "the story," "this story," "the headline," a feed, coverage, reporting mechanics,
+    reading more, newsletters, or what the reader should click. Never discuss missing
+    information. Never use generic filler about public trust, legitimacy, leverage,
+    systems, pressure, or a wider struggle unless you identify the exact institution,
+    actor, and mechanism involved here. Do not repeat the summary in background.
     """
-    return ai_json(provider, model, instructions, prompt, effort="medium", max_output_tokens=1800)
+    return ai_json(
+        provider,
+        model,
+        instructions,
+        prompt,
+        effort="high",
+        max_output_tokens=3500,
+        schema_name="skim_story_card",
+        schema=SUMMARY_RESPONSE_SCHEMA,
+    )
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def ai_summary_repair_cached(
+    provider: str,
+    model: str,
+    prompt_version: str,
+    refresh_key: str,
+    story_id: str,
+    title: str,
+    source: str,
+    article_text: str,
+    draft_json: str,
+    quality_errors: tuple[str, ...],
+) -> dict:
+    prompt = textwrap.dedent(
+        f"""
+        PUBLISHER: {source}
+        PUBLISHER HEADLINE: {clean_headline_source(title)}
+
+        <ARTICLE_BODY>
+        {article_text}
+        </ARTICLE_BODY>
+
+        <REJECTED_DRAFT>
+        {draft_json}
+        </REJECTED_DRAFT>
+
+        QUALITY FAILURES:
+        {"; ".join(quality_errors)}
+        """
+    ).strip()
+    instructions = """
+    Rewrite the rejected Skim card so every listed quality failure is fixed. Ground all
+    current facts in ARTICLE_BODY. Return only the required JSON fields. The headline is
+    5-10 words, no more than 78 characters, and a complete thought. The summary is 3-4 cohesive sentences and 65-150
+    words. The background is 2-3 specific sentences and 45-125 words. Do not mention an
+    article, story, headline, feed, coverage, newsletter, missing details, reading, or
+    clicking. Remove promotional fragments and generic analysis. Do not repeat sentences.
+    """
+    return ai_json(
+        provider,
+        model,
+        instructions,
+        prompt,
+        effort="high",
+        max_output_tokens=3000,
+        schema_name="skim_story_card_repair",
+        schema=SUMMARY_RESPONSE_SCHEMA,
+    )
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -1570,71 +1598,43 @@ def ai_deep_analysis_cached(
     title: str,
     source: str,
     group: str,
-    summary_text: str,
-    link: str,
+    article_url: str,
+    article_text: str,
     topics: tuple[str, ...],
 ) -> dict:
     prompt = textwrap.dedent(
         f"""
-        Source: {source}
-        Source type: {group}
-        Topics: {", ".join(topics)}
-        Headline: {clean_headline_source(title)}
-        RSS summary: {clean_text(summary_text) or "No useful RSS summary was provided."}
-        Full story URL: {link}
-        Stable story id: {story_id}
+        PUBLISHER: {source}
+        SOURCE TYPE: {group}
+        TOPICS: {", ".join(topics)}
+        PUBLISHER HEADLINE: {clean_headline_source(title)}
+        PUBLISHER URL: {article_url}
+
+        <ARTICLE_BODY>
+        {article_text}
+        </ARTICLE_BODY>
         """
     ).strip()
     instructions = """
     You are Terra inside Skim: an intellectually serious but readable news analyst.
-    Use only the provided story material; do not invent unreported facts. Think through
-    the event as a signal in a broader system. Return valid JSON with: analysis,
-    watch_next, research, and links. analysis is 4-6 sentences that explain the deeper
-    stakes, historical echo, who has leverage, who may react, and what future events this
-    could trigger. watch_next is one sentence naming the concrete sign that would make
-    the story more important. research is one sentence telling the reader what to learn
-    next. links is exactly three objects with label and url fields. The first two links
-    must be useful non-Wikipedia references tied to the story, such as source pages,
-    official institutions, data/background pages, reputable topic hubs, or related
-    coverage. The third and final link must be one relevant Wikipedia page.
+    Read the complete supplied publisher text. Ground current facts in it and clearly
+    mark inference. Return valid JSON with analysis, watch_next, and research. analysis
+    is 4-6 sentences explaining the deeper stakes, relevant historical or institutional
+    context, actors with decision-making power, plausible reactions, and connected events.
+    watch_next is one sentence naming a concrete signal that would materially change the
+    assessment. research is one sentence naming the most useful subject to understand
+    next. Never refer to an article, story, headline, feed, coverage, or reading process.
     """
-    return ai_json(provider, model, instructions, prompt, effort="medium", max_output_tokens=1200)
-
-
-def coerce_learning_links(raw_links: object, fallback_links: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
-    raw_non_wiki_links: list[tuple[str, str]] = []
-    raw_wiki_links: list[tuple[str, str]] = []
-    if isinstance(raw_links, list):
-        for item in raw_links:
-            label = ""
-            url = ""
-            if isinstance(item, dict):
-                label = str(item.get("label", "")).strip()
-                url = str(item.get("url", "")).strip()
-            elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                label = str(item[0]).strip()
-                url = str(item[1]).strip()
-            if label and url.startswith(("https://", "http://")):
-                if is_wikipedia_url(url):
-                    raw_wiki_links.append((label, url))
-                else:
-                    raw_non_wiki_links.append((label, url))
-
-    fallback_non_wiki_links = [(label, url) for label, url in fallback_links if not is_wikipedia_url(url)]
-    fallback_wiki_links = [(label, url) for label, url in fallback_links if is_wikipedia_url(url)]
-
-    non_wiki_links: list[tuple[str, str]] = []
-    seen_urls: set[str] = set()
-    for label, url in [*raw_non_wiki_links, *fallback_non_wiki_links]:
-        if url in seen_urls:
-            continue
-        non_wiki_links.append((label, url))
-        seen_urls.add(url)
-        if len(non_wiki_links) == 2:
-            break
-
-    wiki_link = (raw_wiki_links + fallback_wiki_links)[0]
-    return tuple([*non_wiki_links[:2], wiki_link])
+    return ai_json(
+        provider,
+        model,
+        instructions,
+        prompt,
+        effort="high",
+        max_output_tokens=3500,
+        schema_name="skim_deep_analysis",
+        schema=DEEP_RESPONSE_SCHEMA,
+    )
 
 
 def learning_links_text(links: tuple[tuple[str, str], ...]) -> str:
@@ -1645,104 +1645,194 @@ def strip_markdown_links(text: str) -> str:
     return re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r"\1", text)
 
 
-def context_is_too_generic(context: str, story: Story) -> bool:
-    normalized_context = clean_text(context).lower()
-    if not normalized_context:
-        return True
+FORBIDDEN_CARD_PATTERNS = (
+    r"\b(?:the|this|that) article\b",
+    r"\b(?:the|this|that) story\b",
+    r"\b(?:the|this|that) headline\b",
+    r"\bfull (?:article|story)\b",
+    r"\bnews feed\b",
+    r"\bmultiple outlets\b",
+    r"\bfeed did not provide\b",
+    r"\bread (?:the|more)\b",
+    r"\bclick (?:here|through)\b",
+    r"\bsign up\b",
+    r"\bnewsletter\b",
+    r"\bmissing (?:details|information|context)\b",
+)
 
-    old_generic_markers = (
-        "machinery of escalation",
-        "multiple outlets are converging",
-        "wider struggle over power, legitimacy, and public trust",
-        "business story with consequences beyond one company or sector",
-        "technology story about control",
-        "stress test for health systems and public trust",
-    )
-    if not any(marker in normalized_context for marker in old_generic_markers):
-        return False
+GENERIC_ANALYSIS_MARKERS = (
+    "machinery of escalation",
+    "wider struggle over power, legitimacy, and public trust",
+    "business story with consequences beyond one company or sector",
+    "technology story about control",
+    "stress test for the health system",
+    "the bigger value is understanding",
+    "important enough to watch",
+)
 
-    title_tokens = set(significant_words(clean_headline_source(story.title)))
-    context_tokens = set(significant_words(context))
-    return len(title_tokens.intersection(context_tokens)) < 3
-
-
-def ensure_robust_summary(summary: str, story: Story, detail: int) -> str:
-    minimum_sentences = 4
-    if sentence_count(summary) >= minimum_sentences and not is_weak_summary(summary):
-        return summary
-
-    fallback_sentences = split_sentences(happened_summary(story, detail))
-    summary_sentences = [sentence for sentence in split_sentences(summary) if not is_weak_summary(sentence)]
-    combined: list[str] = []
-    for sentence in [*summary_sentences, *fallback_sentences]:
-        if sentence and sentence not in combined:
-            combined.append(sentence)
-        if len(combined) == minimum_sentences:
-            break
-
-    while len(combined) < minimum_sentences:
-        if len(combined) == 0:
-            combined.append(excerpt(clean_headline_source(story.title), width=220))
-        elif len(combined) == 1:
-            combined.append("The story is important enough to watch because it has surfaced across a live news feed.")
-        elif len(combined) == 2:
-            combined.append("The full article should clarify the specific facts, timeline, and people involved.")
-        else:
-            combined.append("The bigger value is understanding what this event reveals beyond the first headline.")
-    return " ".join(combined)
+ABRUPT_HEADLINE_ENDINGS = {
+    "a", "an", "and", "as", "at", "because", "before", "by", "for", "from",
+    "in", "of", "on", "or", "over", "the", "to", "under", "with",
+}
 
 
-def smart_summarize(story: Story, detail: int, refresh_key: str, research_text: str = "") -> dict[str, str]:
+def prose_has_forbidden_language(text: str) -> bool:
+    normalized = clean_text(text).lower()
+    return any(re.search(pattern, normalized) for pattern in FORBIDDEN_CARD_PATTERNS)
+
+
+def prose_is_complete(text: str) -> bool:
+    cleaned = clean_text(text)
+    return bool(cleaned) and cleaned[-1] in ".!?"
+
+
+def sentence_similarity(left: str, right: str) -> float:
+    left_terms = set(significant_words(left))
+    right_terms = set(significant_words(right))
+    if not left_terms or not right_terms:
+        return 0.0
+    return len(left_terms.intersection(right_terms)) / len(left_terms.union(right_terms))
+
+
+def card_quality_errors(card: dict[str, str], story: Story) -> tuple[str, ...]:
+    headline_text = clean_text(card.get("headline", ""))
+    summary_text = clean_text(card.get("summary", ""))
+    background_text = clean_text(card.get("background", ""))
+    errors: list[str] = []
+
+    headline_words = headline_text.split()
+    if not 5 <= len(headline_words) <= 10:
+        errors.append("headline must contain 5-10 words")
+    if len(headline_text) > 78:
+        errors.append("headline must contain no more than 78 characters")
+    if "..." in headline_text or "…" in headline_text:
+        errors.append("headline contains an ellipsis")
+    if headline_words and headline_words[-1].lower().strip(".,:;!?") in ABRUPT_HEADLINE_ENDINGS:
+        errors.append("headline ends abruptly")
+
+    summary_words = len(summary_text.split())
+    summary_sentences = split_sentences(summary_text)
+    if not 3 <= len(summary_sentences) <= 4:
+        errors.append("summary must contain 3-4 complete sentences")
+    if not 65 <= summary_words <= 150:
+        errors.append("summary must contain 65-150 words")
+    if not prose_is_complete(summary_text):
+        errors.append("summary ends with an incomplete sentence")
+
+    background_words = len(background_text.split())
+    background_sentences = split_sentences(background_text)
+    if not 2 <= len(background_sentences) <= 3:
+        errors.append("background must contain 2-3 complete sentences")
+    if not 45 <= background_words <= 125:
+        errors.append("background must contain 45-125 words")
+    if not prose_is_complete(background_text):
+        errors.append("background ends with an incomplete sentence")
+
+    combined = f"{headline_text} {summary_text} {background_text}"
+    if prose_has_forbidden_language(combined):
+        errors.append("card contains meta or promotional language")
+    if any(marker in combined.lower() for marker in GENERIC_ANALYSIS_MARKERS):
+        errors.append("background contains generic stock analysis")
+
+    title_terms = set(significant_words(clean_headline_source(story.title)))
+    summary_terms = set(significant_words(summary_text))
+    required_overlap = min(2, len(title_terms))
+    if required_overlap and len(title_terms.intersection(summary_terms)) < required_overlap:
+        errors.append("summary is not clearly tied to the central subject")
+    if title_terms and not title_terms.intersection(significant_words(background_text)):
+        errors.append("background is not clearly tied to the central subject")
+
+    all_sentences = [*summary_sentences, *background_sentences]
+    for index, sentence in enumerate(all_sentences):
+        for other in all_sentences[index + 1 :]:
+            if sentence_similarity(sentence, other) >= 0.78:
+                errors.append("card repeats substantially the same sentence")
+                return tuple(dict.fromkeys(errors))
+    return tuple(dict.fromkeys(errors))
+
+
+def normalize_ai_card(raw_result: object) -> dict[str, str]:
+    if not isinstance(raw_result, dict):
+        return {"headline": "", "summary": "", "background": ""}
+    return {
+        "headline": clean_text(strip_markdown_links(str(raw_result.get("headline", "")))),
+        "summary": clean_text(strip_markdown_links(str(raw_result.get("summary", "")))),
+        "background": clean_text(strip_markdown_links(str(raw_result.get("background", "")))),
+    }
+
+
+def smart_summarize(
+    story: Story,
+    evidence: ArticleEvidence,
+    detail: int,
+    refresh_key: str,
+) -> dict[str, str] | None:
     provider = configured_ai_provider()
     if not provider:
-        return summarize(story, detail)
+        return None
 
     topics = infer_topics(story)
     fallback_links = story_learning_links(story, topics)
-    gathered_research = research_text or research_notes(story, topics)
+    model = ai_model(provider, deep=False)
+    rss_summary = sanitize_article_text(story.summary_text, max_words=180)
+    if not has_enough_reported_material(story.title, rss_summary):
+        rss_summary = ""
     try:
         ai_result = ai_summary_cached(
             provider,
-            ai_model(provider, deep=False),
+            model,
             AI_SUMMARY_PROMPT_VERSION,
             refresh_key,
             story.id,
             story.title,
             story.source,
             story.group,
-            story.summary_text,
-            story.link,
+            rss_summary,
+            evidence.url,
+            evidence.text,
             topics,
             detail,
-            gathered_research,
         )
     except Exception:
-        return summarize(story, detail)
+        return None
 
-    ai_headline = clean_text(strip_markdown_links(str(ai_result.get("headline", ""))))
-    summary = clean_text(strip_markdown_links(str(ai_result.get("summary", ""))))
-    background_value = ai_result.get("background") or ai_result.get("context", "")
-    background = clean_text(strip_markdown_links(str(background_value)))
-    links = learning_links_text(coerce_learning_links(ai_result.get("links"), fallback_links))
-    summary = ensure_robust_summary(summary, story, detail)
-    if context_is_too_generic(background, story):
-        background = context_text(story, topics)
+    card = normalize_ai_card(ai_result)
+    errors = card_quality_errors(card, story)
+    if errors:
+        try:
+            repaired = ai_summary_repair_cached(
+                provider,
+                model,
+                AI_SUMMARY_PROMPT_VERSION,
+                refresh_key,
+                story.id,
+                story.title,
+                story.source,
+                evidence.text,
+                json.dumps(card, ensure_ascii=True, sort_keys=True),
+                errors,
+            )
+        except Exception:
+            return None
+        card = normalize_ai_card(repaired)
+        if card_quality_errors(card, story):
+            return None
 
     return {
-        "__headline": sensible_display_headline(ai_headline, story),
-        "": summary,
-        "Background": background,
-        "Learn More": f"Learn more: {links}",
+        "__headline": card["headline"],
+        "": card["summary"],
+        "Background": card["background"],
+        "Learn More": f"Learn more: {learning_links_text(fallback_links)}",
     }
 
 
-def deeper_analysis(story: Story) -> dict[str, str]:
+def deeper_analysis(story: Story, evidence: ArticleEvidence) -> dict[str, str]:
     topics = infer_topics(story)
     fallback_links = story_learning_links(story, topics)
     provider = configured_ai_provider()
     if not provider:
         return {
-            "Deeper analysis": "Add GEMINI_API_KEY in Streamlit secrets to enable free AI deeper analysis for this story.",
+            "Deeper analysis": "Add OPENAI_API_KEY in Streamlit secrets to enable deeper analysis.",
             "Research trail": f"Learn more: {learning_links_text(fallback_links)}",
         }
 
@@ -1753,19 +1843,21 @@ def deeper_analysis(story: Story) -> dict[str, str]:
         story.title,
         story.source,
         story.group,
-        story.summary_text,
-        story.link,
+        evidence.url,
+        evidence.text,
         topics,
     )
-    links = learning_links_text(coerce_learning_links(ai_result.get("links"), fallback_links))
-    analysis = clean_text(strip_markdown_links(str(ai_result.get("analysis", "")))) or context_text(story, topics)
+    analysis = clean_text(strip_markdown_links(str(ai_result.get("analysis", ""))))
     watch_next = clean_text(strip_markdown_links(str(ai_result.get("watch_next", ""))))
-    research = clean_text(strip_markdown_links(str(ai_result.get("research", "")))) or lesson_text(story, topics)
+    research = clean_text(strip_markdown_links(str(ai_result.get("research", ""))))
+    if not analysis or prose_has_forbidden_language(f"{analysis} {watch_next} {research}"):
+        raise ValueError("The generated analysis did not pass Skim's quality checks.")
 
     result = {"Deeper analysis": analysis}
     if watch_next:
         result["Watch next"] = watch_next
-    result["Research trail"] = f"{research} Learn more: {links}"
+    research_intro = f"{research} " if research else ""
+    result["Research trail"] = f"{research_intro}Learn more: {learning_links_text(fallback_links)}"
     return result
 
 
@@ -1782,8 +1874,8 @@ def story_age(story: Story) -> str:
     return story.published.strftime("%b %-d")
 
 
-def share_sms_url(story: Story) -> str:
-    body = urllib.parse.quote(f"{clean_headline_source(story.title)} {story.link}")
+def share_sms_url(story: Story, article_url: str, display_headline: str) -> str:
+    body = urllib.parse.quote(f"{display_headline or clean_headline_source(story.title)} {article_url}")
     return f"sms:&body={body}"
 
 
@@ -1832,8 +1924,11 @@ def render_summary_value(value: str) -> str:
     return "".join(rendered)
 
 
-def render_story(ranked_story: RankedStory, detail: int, refresh_key: str) -> None:
+def render_story(prepared_story: PreparedStory) -> None:
+    ranked_story = prepared_story.ranked_story
     story = ranked_story.story
+    evidence = prepared_story.evidence
+    summary = dict(prepared_story.card)
     archived = story.id in st.session_state.archived
     with st.container(border=True):
         story_word = "story" if ranked_story.topic_story_count == 1 else "stories"
@@ -1842,11 +1937,7 @@ def render_story(ranked_story: RankedStory, detail: int, refresh_key: str) -> No
             f"{ranked_story.topic_story_count} {story_word} on this topic"
         )
         st.markdown(f'<div class="story-meta">{html.escape(meta)}</div>', unsafe_allow_html=True)
-        topics = infer_topics(story)
-        provider = configured_ai_provider()
-        gathered_research = research_notes(story, topics) if provider else ""
-        summary = smart_summarize(story, detail, refresh_key, gathered_research)
-        display_headline = summary.pop("__headline", headline(story.title, 0))
+        display_headline = summary.pop("__headline")
         story_title_text = html.escape(display_headline)
         if story.image_url:
             story_title = f'<h2 class="story-title">{story_title_text}</h2>'
@@ -1867,13 +1958,13 @@ def render_story(ranked_story: RankedStory, detail: int, refresh_key: str) -> No
             label_html = "" if label == "Learn More" else (f"<b>{html.escape(label)}:</b> " if label else "")
             rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
         st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
-        cost_note = openai_cost_note(story, gathered_research)
+        cost_note = openai_cost_note(story, evidence.text)
         if cost_note:
             st.markdown(f'<div class="story-ai-cost">{html.escape(cost_note)}</div>', unsafe_allow_html=True)
 
         col1, col2, col3, col4 = st.columns([1, 1, 1, 1], gap="small", vertical_alignment="top")
         with col1:
-            st.link_button("Full story", story.link, use_container_width=True)
+            st.link_button("Full story", evidence.url, use_container_width=True)
         with col2:
             label = "Archived" if archived else "Archive"
             if st.button(label, key=f"archive-{story.id}", icon=":material/bookmark:", use_container_width=True):
@@ -1883,12 +1974,16 @@ def render_story(ranked_story: RankedStory, detail: int, refresh_key: str) -> No
                     st.session_state.archived.add(story.id)
                 st.rerun()
         with col3:
-            st.link_button("Share", share_sms_url(story), use_container_width=True)
+            st.link_button(
+                "Share",
+                share_sms_url(story, evidence.url, display_headline),
+                use_container_width=True,
+            )
         with col4:
             if st.button("Deep analysis", key=f"deep-{story.id}", use_container_width=True):
                 with st.spinner("Building the deeper read..."):
                     try:
-                        st.session_state.deep_analyses[story.id] = deeper_analysis(story)
+                        st.session_state.deep_analyses[story.id] = deeper_analysis(story, evidence)
                     except Exception as exc:
                         st.session_state.deep_analyses[story.id] = {
                             "Deeper analysis": f"The AI provider could not complete this request: {exc}"
@@ -1955,7 +2050,7 @@ def prune_shown_cluster_history() -> None:
     st.session_state.shown_cluster_history = pruned
 
 
-def mark_batch_shown(batch: list[RankedStory]) -> None:
+def mark_batch_shown(batch: Sequence[RankedStory], refresh_key: str) -> None:
     if not batch:
         return
     now = utc_now().isoformat()
@@ -1964,7 +2059,7 @@ def mark_batch_shown(batch: list[RankedStory]) -> None:
         history[item.cluster_key] = now
     st.session_state.shown_cluster_history = history
     st.session_state.batch_refreshed_at = now
-    st.session_state.batch_refresh_id = now
+    st.session_state.batch_refresh_id = refresh_key
 
 
 def batch_refreshed_label() -> str:
@@ -2015,36 +2110,68 @@ def current_batch_from_keys(
     return current
 
 
-def select_batch(
+def prepare_ranked_story(
+    item: RankedStory,
+    detail: int,
+    refresh_key: str,
+) -> PreparedStory | None:
+    evidence = fetch_article_evidence(item.story.link, item.story.title)
+    if not evidence:
+        return None
+    card = smart_summarize(item.story, evidence, detail, refresh_key)
+    if not card:
+        return None
+    return PreparedStory(ranked_story=item, evidence=evidence, card=card)
+
+
+def build_publishable_batch(
     ranked_stories: list[RankedStory],
     keyword_rankings: dict[str, list[RankedStory]],
     show_archived: bool,
-) -> list[RankedStory]:
+    detail: int,
+) -> list[PreparedStory]:
+    if not configured_ai_provider():
+        return []
+
     prune_shown_cluster_history()
     shown_cluster_keys = set(st.session_state.shown_cluster_history)
     current = current_batch_from_keys(ranked_stories, keyword_rankings, show_archived)
     if current:
-        return current
+        refresh_key = str(st.session_state.get("batch_refresh_id", "")) or utc_now().isoformat()
+        restored = [
+            prepared
+            for item in current
+            if (prepared := prepare_ranked_story(item, detail, refresh_key))
+        ]
+        if len(restored) == len(current):
+            return restored
+        st.session_state.current_cluster_keys = []
 
-    batch: list[RankedStory] = []
+    refresh_key = utc_now().isoformat()
+    batch: list[PreparedStory] = []
     used_cluster_keys: set[str] = set()
 
-    for item in ranked_stories:
+    for item in ranked_stories[:MAX_BASE_CANDIDATES]:
         if len(batch) >= BATCH_SIZE:
             break
         if ranked_item_is_available(item, show_archived, shown_cluster_keys | used_cluster_keys):
-            batch.append(item)
-            used_cluster_keys.add(item.cluster_key)
+            prepared = prepare_ranked_story(item, detail, refresh_key)
+            if prepared:
+                batch.append(prepared)
+                used_cluster_keys.add(item.cluster_key)
 
     for keyword in keyword_rankings:
-        for item in keyword_rankings[keyword]:
+        for item in keyword_rankings[keyword][:MAX_KEYWORD_CANDIDATES]:
             if ranked_item_is_available(item, show_archived, shown_cluster_keys | used_cluster_keys):
-                batch.append(item)
-                used_cluster_keys.add(item.cluster_key)
-                break
+                prepared = prepare_ranked_story(item, detail, refresh_key)
+                if prepared:
+                    batch.append(prepared)
+                    used_cluster_keys.add(item.cluster_key)
+                    break
 
-    st.session_state.current_cluster_keys = [item.cluster_key for item in batch]
-    mark_batch_shown(batch)
+    ranked_batch = [prepared.ranked_story for prepared in batch]
+    st.session_state.current_cluster_keys = [item.cluster_key for item in ranked_batch]
+    mark_batch_shown(ranked_batch, refresh_key)
     return batch
 
 
@@ -2097,22 +2224,22 @@ def main() -> None:
         ranked_stories = rank_stories(stories, keywords)
         keyword_rankings, keyword_errors = fetch_keyword_rankings(keywords)
         errors.extend(keyword_errors)
-    batch = select_batch(ranked_stories, keyword_rankings, show_archived)
+    with st.spinner("Reading publisher articles and writing grounded summaries..."):
+        batch = build_publishable_batch(ranked_stories, keyword_rankings, show_archived, detail)
     render_batch_timestamp(len(batch))
 
     if not batch:
-        st.info(
-            "No stories had enough reported material for this setup. Skim now filters out headline-only items; "
-            f"it also will not repeat stories shown in the last {NO_REPEAT_HOURS} hours. Open Customize and broaden the topics or source types."
-        )
-    else:
-        refresh_key = str(st.session_state.get("batch_refresh_id", ""))
-        for ranked_story in batch:
-            render_story(
-                ranked_story,
-                detail=detail,
-                refresh_key=refresh_key,
+        if not configured_ai_provider():
+            st.info("Add OPENAI_API_KEY and set SKIM_AI_PROVIDER to openai in Streamlit secrets.")
+        else:
+            st.info(
+                "No new stories passed the full-article and AI quality checks for this setup. "
+                f"Skim also will not repeat stories shown in the last {NO_REPEAT_HOURS} hours. "
+                "Open Customize to broaden the topics or source types."
             )
+    else:
+        for prepared_story in batch:
+            render_story(prepared_story)
 
     st.divider()
 
@@ -2120,7 +2247,8 @@ def main() -> None:
     col1.metric("Stories", len(batch))
     col2.metric("Archived", len(st.session_state.archived))
     if col3.button("Refresh", icon=":material/refresh:", use_container_width=True):
-        fetch_research_snippet.clear()
+        fetch_article_evidence.clear()
+        resolve_article_url.clear()
         st.session_state.current_cluster_keys = []
         st.session_state.deep_analyses = {}
         st.rerun()
@@ -2143,7 +2271,7 @@ def main() -> None:
             st.toggle("Reddit and Hacker News", key="include_social")
             st.toggle("Google News aggregators", key="include_aggregators")
             st.toggle("Show archived stories", key="show_archived")
-            if st.button("Clear 48-hour history", use_container_width=True):
+            if st.button("Clear 24-hour history", use_container_width=True):
                 st.session_state.shown_cluster_history = {}
                 st.session_state.current_cluster_keys = []
                 st.rerun()
@@ -2169,8 +2297,9 @@ def main() -> None:
     st.markdown(
         """
         <p class="skim-footnote">
-            Skim uses public RSS feeds. Add OPENAI_API_KEY in Streamlit secrets for AI-written
-            headlines, summaries, and Background. Without an AI key, Skim uses local summaries.
+            Skim uses public RSS feeds to find stories, reads the publisher article, and uses
+            OpenAI for the headline, summary, and Background. Cards without enough source text
+            or a clean grounded result are left out.
         </p>
         """,
         unsafe_allow_html=True,
