@@ -15,7 +15,6 @@ from email.utils import parsedate_to_datetime
 from typing import Iterable
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 
 APP_NAME = "Skim"
@@ -306,24 +305,6 @@ def page_style() -> None:
                 font-size: 0.76rem;
                 text-transform: uppercase;
                 margin: 0.85rem 0 0.35rem 0;
-            }
-
-            .share-button {
-                border: 1px solid #c8c8c8;
-                background: #d8d8d8;
-                color: #111111;
-                border-radius: 6px;
-                padding: 0;
-                font-size: 0.78rem;
-                cursor: pointer;
-                width: 100%;
-                min-height: 2.15rem;
-                line-height: 1;
-                box-shadow: 0 0 13px rgba(210, 210, 210, 0.22);
-            }
-
-            .share-button:hover {
-                border-color: var(--skim-accent);
             }
 
             .skim-footnote {
@@ -1512,40 +1493,9 @@ def story_age(story: Story) -> str:
     return story.published.strftime("%b %-d")
 
 
-def share_component(story: Story) -> None:
-    payload_title = html.escape(story.title, quote=True)
-    payload_url = html.escape(story.link, quote=True)
-    fallback = urllib.parse.quote(story.link)
-    components.html(
-        f"""
-        <button class="share-button" onclick="
-            if (navigator.share) {{
-                navigator.share({{title: '{payload_title}', url: '{payload_url}'}});
-            }} else {{
-                window.open('sms:&body={fallback}', '_blank');
-            }}
-        ">Share</button>
-        <style>
-            .share-button {{
-                border: 1px solid #c8c8c8;
-                background: #d8d8d8;
-                color: #111111;
-                border-radius: 6px;
-                padding: 0;
-                font-size: 0.78rem;
-                cursor: pointer;
-                width: 100%;
-                min-height: 2.15rem;
-                height: 2.15rem;
-                line-height: 1;
-                box-shadow: 0 0 13px rgba(210, 210, 210, 0.22);
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            }}
-            .share-button:hover {{ border-color: #f1c45b; }}
-        </style>
-        """,
-        height=38,
-    )
+def share_sms_url(story: Story) -> str:
+    body = urllib.parse.quote(f"{clean_headline_source(story.title)} {story.link}")
+    return f"sms:&body={body}"
 
 
 def render_summary_value(value: str) -> str:
@@ -1635,7 +1585,7 @@ def render_story(ranked_story: RankedStory, detail: int, max_headline_words: int
                     st.session_state.archived.add(story.id)
                 st.rerun()
         with col3:
-            share_component(story)
+            st.link_button("Share", share_sms_url(story), use_container_width=True)
         with col4:
             if st.button("Deep analysis", key=f"deep-{story.id}", use_container_width=True):
                 with st.spinner("Building the deeper read..."):
