@@ -21,6 +21,8 @@ APP_NAME = "Skim"
 BATCH_SIZE = 20
 ITEMS_PER_SOURCE = 50
 FEED_TIMEOUT_SECONDS = 15
+MIN_SUMMARY_WORDS = 18
+MIN_NEW_SUMMARY_TERMS = 7
 OPENAI_SUMMARY_MODEL = "gpt-5.6-luna"
 OPENAI_DEEP_MODEL = "gpt-5.6-terra"
 AI_SUMMARY_PROMPT_VERSION = "context-specific-v2"
@@ -484,6 +486,62 @@ def clean_headline_source(title: str) -> str:
     return title.rstrip(" .")
 
 
+def normalized_story_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", clean_text(text).lower()).strip()
+
+
+def has_reported_detail_language(summary: str) -> bool:
+    summary_lower = f" {clean_text(summary).lower()} "
+    detail_markers = (
+        " according to ",
+        " announced ",
+        " confirmed ",
+        " reported ",
+        " said ",
+        " says ",
+        " told ",
+        " warned ",
+        " found ",
+        " showed ",
+        " shows ",
+        " officials ",
+        " authorities ",
+        " researchers ",
+        " analysts ",
+        " company ",
+        " agency ",
+        " ministry ",
+        " department ",
+        " government ",
+    )
+    return any(marker in summary_lower for marker in detail_markers)
+
+
+def has_enough_reported_material(title: str, summary: str) -> bool:
+    summary = clean_text(summary)
+    if is_weak_summary(summary):
+        return False
+
+    headline = clean_headline_source(title)
+    summary_norm = normalized_story_text(summary)
+    headline_norm = normalized_story_text(headline)
+    if not summary_norm or summary_norm == headline_norm:
+        return False
+
+    total_words = re.findall(r"[a-z0-9]+", summary_norm)
+    if len(total_words) < MIN_SUMMARY_WORDS:
+        return False
+
+    headline_terms = set(significant_words(headline))
+    summary_terms = set(significant_words(summary))
+    new_terms = summary_terms - headline_terms
+    if len(new_terms) < MIN_NEW_SUMMARY_TERMS:
+        return False
+
+    useful_sentences = [sentence for sentence in split_sentences(summary) if not is_weak_summary(sentence)]
+    return len(useful_sentences) >= 2 or (len(total_words) >= 32 and has_reported_detail_language(summary))
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
     request = urllib.request.Request(source.url, headers=REQUEST_HEADERS)
@@ -507,6 +565,8 @@ def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
         summary = clean_text(summary_raw)
         date_text = child_text(entry, ("pubDate", "published", "updated"))
         if not title or not link:
+            continue
+        if not has_enough_reported_material(title, summary):
             continue
         stories.append(
             Story(
@@ -1760,7 +1820,10 @@ def main() -> None:
     batch = select_batch(ranked_stories, show_archived)
 
     if not batch:
-        st.info("No stories matched this setup. Open Customize and broaden the topics or source types.")
+        st.info(
+            "No stories had enough reported material for this setup. Skim now filters out headline-only items; "
+            "open Customize and broaden the topics or source types."
+        )
     else:
         for ranked_story in batch:
             render_story(ranked_story, detail=detail, max_headline_words=max_headline_words)
