@@ -9,10 +9,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 import streamlit as st
 
@@ -31,6 +32,9 @@ MAX_KEYWORD_CANDIDATES = 10
 MIN_SUMMARY_WORDS = 18
 MIN_NEW_SUMMARY_TERMS = 7
 NO_REPEAT_HOURS = 24
+POPULAR_COVERAGE_HOURS = 24
+FAST_COVERAGE_HOURS = 8
+MAJOR_BREAKING_HOURS = 12
 OPENAI_SUMMARY_MODEL = "gpt-5.6-terra"
 OPENAI_DEEP_MODEL = "gpt-5.6-terra"
 AI_SUMMARY_PROMPT_VERSION = "grounded-article-v1"
@@ -91,6 +95,8 @@ class RankedStory:
     references: int
     topic_story_count: int
     score: float
+    coverage_span_hours: float = 0.0
+    signal_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -144,6 +150,7 @@ NEWS_SOURCES = (
     NewsSource("ABC News", "https://abcnews.go.com/abcnews/topstories", "Major News", ("US", "World")),
     NewsSource("CBS News", "https://www.cbsnews.com/latest/rss/main", "Major News", ("US", "World")),
     NewsSource("Google News Top", "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("World", "US")),
+    NewsSource("Google News World", "https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("World",)),
     NewsSource("Google News Business", "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("Business",)),
     NewsSource("Google News Technology", "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("Tech", "AI")),
     NewsSource("Google News Science", "https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("Science",)),
@@ -161,6 +168,61 @@ STOPWORDS = {
     "said", "says", "she", "that", "the", "their", "this", "to", "was", "were",
     "with", "you", "after", "about", "over", "into", "latest", "live", "updates",
     "how", "why", "what", "when", "where", "who", "more", "than",
+}
+
+MAJOR_OUTLET_MARKERS = (
+    "abc news",
+    "al jazeera",
+    "associated press",
+    "ap news",
+    "bbc",
+    "bloomberg",
+    "cbc",
+    "cbs news",
+    "cnn",
+    "deutsche welle",
+    "dw",
+    "financial times",
+    "france 24",
+    "guardian",
+    "nbc news",
+    "new york times",
+    "npr",
+    "reuters",
+    "sky news",
+    "wall street journal",
+    "washington post",
+)
+
+BREAKING_NEWS_TERMS = {
+    "airstrike",
+    "assassination",
+    "attack",
+    "ceasefire",
+    "collapse",
+    "coup",
+    "crash",
+    "crisis",
+    "dead",
+    "death",
+    "earthquake",
+    "emergency",
+    "evacuation",
+    "explosion",
+    "flood",
+    "hostage",
+    "invasion",
+    "killed",
+    "missile",
+    "resigns",
+    "resignation",
+    "sanctions",
+    "shooting",
+    "strike",
+    "tariff",
+    "truce",
+    "war",
+    "wildfire",
 }
 
 
@@ -402,6 +464,13 @@ def page_style() -> None:
                 margin-bottom: 0.72rem;
             }
 
+            .build-progress {
+                color: var(--skim-muted);
+                font-size: 0.78rem;
+                line-height: 1.35;
+                margin: 0.2rem 0 0.75rem;
+            }
+
             .interaction-label {
                 color: var(--skim-muted);
                 font-size: 0.76rem;
@@ -598,10 +667,24 @@ def story_tokens(story: Story) -> set[str]:
     return set(significant_words(f"{story.title} {story.summary_text}"))
 
 
+def headline_tokens(story: Story) -> set[str]:
+    return set(significant_words(clean_headline_source(story.title)))
+
+
 def cluster_key_from_tokens(tokens: set[str], fallback: str) -> str:
     if not tokens:
         return stable_id("story", fallback, "")
     return "-".join(sorted(tokens)[:10])
+
+
+def cluster_key_from_stories(cluster: Sequence[Story], representative: Story) -> str:
+    if len(cluster) == 1:
+        return cluster_key_from_tokens(headline_tokens(representative), representative.title)
+    counts = Counter(token for story in cluster for token in headline_tokens(story))
+    threshold = max(2, (len(cluster) + 1) // 2)
+    shared_tokens = {token for token, count in counts.items() if count >= threshold}
+    tokens = shared_tokens or headline_tokens(representative)
+    return cluster_key_from_tokens(tokens, representative.title)
 
 
 def clean_headline_source(title: str) -> str:
@@ -758,7 +841,11 @@ def fetch_keyword_rankings(custom_keywords: tuple[str, ...]) -> tuple[dict[str, 
 
     for keyword in custom_keywords:
         source_stories, error = fetch_source(keyword_news_source(keyword))
-        keyword_rankings[keyword] = rank_stories(source_stories, (keyword,))
+        keyword_rankings[keyword] = rank_stories(
+            source_stories,
+            (keyword,),
+            require_high_signal=False,
+        )
         if error:
             errors.append(error)
 
@@ -767,27 +854,43 @@ def fetch_keyword_rankings(custom_keywords: tuple[str, ...]) -> tuple[dict[str, 
 
 def cluster_stories(stories: list[Story]) -> list[list[Story]]:
     clusters: list[list[Story]] = []
-    cluster_tokens: list[set[str]] = []
+    cluster_headlines: list[list[set[str]]] = []
 
     for story in stories:
-        tokens = story_tokens(story)
+        tokens = headline_tokens(story)
         matched_index = None
-        for index, existing_tokens in enumerate(cluster_tokens):
-            shared = tokens.intersection(existing_tokens)
-            union = tokens.union(existing_tokens)
-            overlap = len(shared) / max(1, len(union))
-            if overlap >= 0.3 or len(shared) >= 4:
+        best_similarity = 0.0
+        for index, existing_headlines in enumerate(cluster_headlines):
+            similarity = max(
+                headline_event_similarity(tokens, existing_tokens)
+                for existing_tokens in existing_headlines
+            )
+            if similarity > best_similarity and similarity >= 0.34:
                 matched_index = index
-                break
+                best_similarity = similarity
 
         if matched_index is None:
             clusters.append([story])
-            cluster_tokens.append(tokens)
+            cluster_headlines.append([tokens])
         else:
             clusters[matched_index].append(story)
-            cluster_tokens[matched_index].update(tokens)
+            cluster_headlines[matched_index].append(tokens)
 
     return clusters
+
+
+def headline_event_similarity(left_tokens: set[str], right_tokens: set[str]) -> float:
+    if not left_tokens or not right_tokens:
+        return 0.0
+    shared = left_tokens.intersection(right_tokens)
+    if len(shared) < 2:
+        return 0.0
+    overlap = len(shared) / len(left_tokens.union(right_tokens))
+    if len(shared) >= 4:
+        return max(overlap, 0.5)
+    if len(shared) >= 3:
+        return max(overlap, 0.38)
+    return overlap
 
 
 def custom_keywords() -> tuple[str, ...]:
@@ -881,16 +984,90 @@ def keyword_match_count(story: Story, keywords: tuple[str, ...]) -> int:
     return matches
 
 
-def story_score(story: Story, references: int, cluster_size: int, keywords: tuple[str, ...] = ()) -> float:
-    now = datetime.now(timezone.utc)
-    published = story.published or now
+def story_age_hours(story: Story, now: datetime | None = None) -> float:
+    now = now or datetime.now(timezone.utc)
+    if not story.published:
+        return 12.0
+    published = story.published
     if published.tzinfo is None:
         published = published.replace(tzinfo=timezone.utc)
-    age_hours = max(0.0, (now - published.astimezone(timezone.utc)).total_seconds() / 3600)
-    recency_score = max(0.0, 48.0 - age_hours)
-    group_weight = {"Custom": 24.0, "Aggregator": 16.0, "Social": 12.0, "Major News": 10.0}.get(story.group, 8.0)
+    return max(0.0, (now - published.astimezone(timezone.utc)).total_seconds() / 3600)
+
+
+def is_major_outlet(story: Story) -> bool:
+    source = story.source.lower()
+    marker_match = any(
+        re.search(rf"\b{re.escape(marker)}\b", source) if len(marker) <= 3 else marker in source
+        for marker in MAJOR_OUTLET_MARKERS
+    )
+    return story.group == "Major News" or marker_match
+
+
+def outlet_identity(source: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", source.lower()).strip()
+    aliases = (
+        (("associated press", "ap news"), "associated press"),
+        (("new york times", "nyt"), "new york times"),
+        (("deutsche welle", "dw"), "deutsche welle"),
+        (("british broadcasting corporation", "bbc"), "bbc"),
+    )
+    for names, canonical in aliases:
+        if any(re.search(rf"\b{re.escape(name)}\b", normalized) for name in names):
+            return canonical
+    return normalized
+
+
+def breaking_term_count(story: Story) -> int:
+    raw_words = set(re.findall(r"[a-z0-9]+", clean_headline_source(story.title).lower()))
+    normalized_words = {normalize_word(word) for word in raw_words}
+    breaking_variants = BREAKING_NEWS_TERMS.union(
+        normalize_word(term) for term in BREAKING_NEWS_TERMS
+    )
+    return len(raw_words.union(normalized_words).intersection(breaking_variants))
+
+
+def cluster_coverage_span_hours(cluster: Sequence[Story]) -> float:
+    published_times = []
+    for story in cluster:
+        if not story.published:
+            continue
+        published = story.published
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=timezone.utc)
+        published_times.append(published.astimezone(timezone.utc))
+    if len(published_times) < 2:
+        return 0.0
+    return max(0.0, (max(published_times) - min(published_times)).total_seconds() / 3600)
+
+
+def story_score(
+    story: Story,
+    references: int,
+    cluster_size: int,
+    keywords: tuple[str, ...] = (),
+    coverage_span_hours: float = 0.0,
+) -> float:
+    now = datetime.now(timezone.utc)
+    age_hours = story_age_hours(story, now)
+    recency_score = max(0.0, 72.0 - (age_hours * 4.0))
+    outlet_score = min(references, 8) * 30.0
+    report_score = min(cluster_size, 12) * 5.0
+    coverage_velocity = references / max(1.0, coverage_span_hours + 1.0)
+    velocity_score = min(45.0, coverage_velocity * 20.0)
+    major_outlet_score = 24.0 if is_major_outlet(story) else 0.0
+    breaking_score = min(3, breaking_term_count(story)) * 14.0
+    social_penalty = 32.0 if story.group == "Social" and references == 1 else 0.0
     keyword_boost = keyword_match_count(story, keywords) * 34.0
-    return (references * 18.0) + (cluster_size * 8.0) + recency_score + group_weight + keyword_boost
+    return (
+        recency_score
+        + outlet_score
+        + report_score
+        + velocity_score
+        + major_outlet_score
+        + breaking_score
+        + keyword_boost
+        - social_penalty
+    )
 
 
 def representative_quality(story: Story) -> tuple[int, int, int]:
@@ -902,35 +1079,77 @@ def representative_quality(story: Story) -> tuple[int, int, int]:
         "Aggregator": 2,
         "Custom": 1,
     }.get(story.group, 0)
-    return direct_publisher_link, substantial_feed_text, source_priority
+    return source_priority, direct_publisher_link, substantial_feed_text
 
 
-def rank_stories(stories: list[Story], keywords: tuple[str, ...] = ()) -> list[RankedStory]:
+def cluster_is_high_signal(cluster: Sequence[Story], references: int) -> bool:
+    freshest_age = min(story_age_hours(story) for story in cluster)
+    has_major_report = any(is_major_outlet(story) for story in cluster)
+    has_breaking_language = any(breaking_term_count(story) for story in cluster)
+    if references >= 3 and freshest_age <= POPULAR_COVERAGE_HOURS:
+        return True
+    if references >= 2 and freshest_age <= FAST_COVERAGE_HOURS:
+        return True
+    if has_major_report and freshest_age <= 4:
+        return True
+    return has_major_report and has_breaking_language and freshest_age <= MAJOR_BREAKING_HOURS
+
+
+def cluster_signal_label(
+    cluster: Sequence[Story],
+    references: int,
+    coverage_span_hours: float,
+) -> str:
+    freshest_age = min(story_age_hours(story) for story in cluster)
+    if references >= 3 and coverage_span_hours <= FAST_COVERAGE_HOURS:
+        return "Fast-rising"
+    if references >= 2:
+        return "Widely covered"
+    if freshest_age <= MAJOR_BREAKING_HOURS and any(breaking_term_count(story) for story in cluster):
+        return "Breaking"
+    return "Major outlet"
+
+
+def rank_stories(
+    stories: list[Story],
+    keywords: tuple[str, ...] = (),
+    require_high_signal: bool = True,
+) -> list[RankedStory]:
     ranked: list[RankedStory] = []
     for cluster in cluster_stories(stories):
-        sources = {story.source for story in cluster}
-        groups = {story.group for story in cluster}
-        references = (
-            len(sources)
-            + (3 if "Custom" in groups else 0)
-            + (2 if "Aggregator" in groups else 0)
-            + (1 if "Social" in groups else 0)
-        )
+        sources = {outlet_identity(story.source) for story in cluster}
+        references = len(sources)
+        if require_high_signal and not cluster_is_high_signal(cluster, references):
+            continue
+        coverage_span_hours = cluster_coverage_span_hours(cluster)
         representative = max(
             cluster,
             key=lambda story: (
                 representative_quality(story),
-                story_score(story, references=references, cluster_size=len(cluster), keywords=keywords),
+                story_score(
+                    story,
+                    references=references,
+                    cluster_size=len(cluster),
+                    keywords=keywords,
+                    coverage_span_hours=coverage_span_hours,
+                ),
             ),
         )
-        tokens = story_tokens(representative)
         ranked.append(
             RankedStory(
                 story=representative,
-                cluster_key=cluster_key_from_tokens(tokens, representative.title),
+                cluster_key=cluster_key_from_stories(cluster, representative),
                 references=references,
                 topic_story_count=len(cluster),
-                score=story_score(representative, references=references, cluster_size=len(cluster), keywords=keywords),
+                score=story_score(
+                    representative,
+                    references=references,
+                    cluster_size=len(cluster),
+                    keywords=keywords,
+                    coverage_span_hours=coverage_span_hours,
+                ),
+                coverage_span_hours=coverage_span_hours,
+                signal_label=cluster_signal_label(cluster, references, coverage_span_hours),
             )
         )
 
@@ -2123,10 +2342,12 @@ def render_story(prepared_story: PreparedStory) -> None:
     summary = dict(prepared_story.card)
     archived = story.id in st.session_state.archived
     with st.container(border=True):
-        story_word = "story" if ranked_story.topic_story_count == 1 else "stories"
+        outlet_word = "outlet" if ranked_story.references == 1 else "outlets"
+        report_word = "report" if ranked_story.topic_story_count == 1 else "reports"
         meta = (
-            f"{story.group} / {story_age(story)} / reference score {ranked_story.references}x / "
-            f"{ranked_story.topic_story_count} {story_word} on this topic"
+            f"{ranked_story.signal_label or story.group} / {story_age(story)} / "
+            f"{ranked_story.references} {outlet_word} / "
+            f"{ranked_story.topic_story_count} {report_word} in this cluster"
         )
         st.markdown(f'<div class="story-meta">{html.escape(meta)}</div>', unsafe_allow_html=True)
         display_headline = summary.pop("__headline")
@@ -2383,11 +2604,22 @@ def prepare_ranked_story(
     return PreparedStory(ranked_story=item, evidence=evidence, card=attempt.card), attempt.ai_cost
 
 
+def append_prepared_story(
+    batch: list[PreparedStory],
+    prepared: PreparedStory,
+    on_story: Callable[[PreparedStory, int], None] | None,
+) -> None:
+    batch.append(prepared)
+    if on_story:
+        on_story(prepared, len(batch))
+
+
 def build_publishable_batch(
     ranked_stories: list[RankedStory],
     keyword_rankings: dict[str, list[RankedStory]],
     show_archived: bool,
     detail: int,
+    on_story: Callable[[PreparedStory, int], None] | None = None,
 ) -> list[PreparedStory]:
     if not configured_ai_provider():
         return []
@@ -2406,6 +2638,9 @@ def build_publishable_batch(
                 restored.append(prepared)
         if len(restored) == len(current):
             record_batch_ai_cost(restored, refresh_key, restored_ai_cost)
+            if on_story:
+                for index, prepared in enumerate(restored, start=1):
+                    on_story(prepared, index)
             return restored
         st.session_state.current_cluster_keys = []
 
@@ -2421,7 +2656,7 @@ def build_publishable_batch(
             prepared, attempt_cost = prepare_ranked_story(item, detail, refresh_key)
             attempted_ai_cost += attempt_cost
             if prepared:
-                batch.append(prepared)
+                append_prepared_story(batch, prepared, on_story)
                 used_cluster_keys.add(item.cluster_key)
 
     for keyword in keyword_rankings:
@@ -2430,7 +2665,7 @@ def build_publishable_batch(
                 prepared, attempt_cost = prepare_ranked_story(item, detail, refresh_key)
                 attempted_ai_cost += attempt_cost
                 if prepared:
-                    batch.append(prepared)
+                    append_prepared_story(batch, prepared, on_story)
                     used_cluster_keys.add(item.cluster_key)
                     break
 
@@ -2461,9 +2696,12 @@ def main() -> None:
         st.session_state.batch_refresh_id = ""
     if "batch_refreshed_at" not in st.session_state:
         st.session_state.batch_refreshed_at = ""
-    st.session_state.setdefault("selected_topics", ["World", "US", "Politics", "Tech", "AI", "Reddit Hot"])
+    st.session_state.setdefault(
+        "selected_topics",
+        ["World", "US", "Politics", "Business", "Tech", "Climate", "Health"],
+    )
     st.session_state.setdefault("detail", 3)
-    st.session_state.setdefault("include_social", True)
+    st.session_state.setdefault("include_social", False)
     st.session_state.setdefault("include_aggregators", True)
     st.session_state.setdefault("show_archived", False)
     initialize_keyword_state()
@@ -2474,6 +2712,10 @@ def main() -> None:
 
     if st.button("Complete story refresh", icon=":material/sync:", use_container_width=True):
         complete_story_refresh()
+
+    briefing_status_slot = st.empty()
+    batch_timestamp_slot = st.empty()
+    story_stream = st.container()
 
     selected_topics = st.session_state.selected_topics
     detail = st.session_state.detail
@@ -2492,10 +2734,30 @@ def main() -> None:
         ranked_stories = rank_stories(stories, keywords)
         keyword_rankings, keyword_errors = fetch_keyword_rankings(keywords)
         errors.extend(keyword_errors)
-    with st.spinner("Reading publisher articles and writing grounded summaries..."):
-        batch = build_publishable_batch(ranked_stories, keyword_rankings, show_archived, detail)
+
+    def publish_story(prepared_story: PreparedStory, ready_count: int) -> None:
+        briefing_status_slot.markdown(
+            f'<div class="build-progress">{ready_count} ready · building the rest of the briefing...</div>',
+            unsafe_allow_html=True,
+        )
+        with story_stream:
+            render_story(prepared_story)
+
+    briefing_status_slot.markdown(
+        '<div class="build-progress">Reading the strongest candidates...</div>',
+        unsafe_allow_html=True,
+    )
+    batch = build_publishable_batch(
+        ranked_stories,
+        keyword_rankings,
+        show_archived,
+        detail,
+        on_story=publish_story,
+    )
+    briefing_status_slot.empty()
     render_ai_cost_summary(cost_summary_slot)
-    render_batch_timestamp(len(batch))
+    with batch_timestamp_slot.container():
+        render_batch_timestamp(len(batch))
 
     if not batch:
         if not configured_ai_provider():
@@ -2506,10 +2768,6 @@ def main() -> None:
                 f"Skim also will not repeat stories shown in the last {NO_REPEAT_HOURS} hours. "
                 "Open Customize to broaden the topics or source types."
             )
-    else:
-        for prepared_story in batch:
-            render_story(prepared_story)
-
     st.divider()
 
     col1, col2, col3 = st.columns([1, 1, 1])
@@ -2545,7 +2803,7 @@ def main() -> None:
                 st.session_state.current_cluster_keys = []
                 st.rerun()
         st.markdown("Keyword boosters")
-        st.caption("Each saved keyword adds one extra trending article on top of the 15-story main feed.")
+        st.caption("Each saved keyword adds one extra trending article beyond the high-signal main feed.")
         for row_index in range(3):
             cols = st.columns(3)
             for col_index, col in enumerate(cols):
@@ -2559,8 +2817,8 @@ def main() -> None:
                     )
         persist_keywords_to_query_params()
         st.caption(
-            "X is not included yet because the official useful API paths generally require paid access. "
-            "Skim can add it later when you want to connect an X developer account."
+            "The main briefing now favors independent outlet confirmation, fast coverage growth, "
+            "and fresh consequential reporting from major newsrooms."
         )
 
     st.markdown(

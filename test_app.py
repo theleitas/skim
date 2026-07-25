@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import app
@@ -36,6 +37,26 @@ class ArticlePipelineTests(unittest.TestCase):
                 "above the statistical baseline or a credible environmental link."
             ),
         }
+
+    def news_story(
+        self,
+        story_id: str,
+        title: str,
+        source: str,
+        *,
+        hours_ago: float = 1,
+        group: str = "Major News",
+    ) -> app.Story:
+        return app.Story(
+            id=story_id,
+            source=source,
+            group=group,
+            title=title,
+            link=f"https://example.com/{story_id}",
+            summary_text="Officials confirmed the development and described its immediate consequences.",
+            published=datetime.now(timezone.utc) - timedelta(hours=hours_ago),
+            topics=("World",),
+        )
 
     def test_sanitize_article_text_removes_page_furniture_and_duplicates(self) -> None:
         raw = "\n".join(
@@ -153,6 +174,98 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertEqual(first_total, 250_000)
         self.assertFalse(second_changed)
         self.assertEqual(second_total, first_total)
+
+    def test_story_clusters_do_not_drift_into_shared_generic_words(self) -> None:
+        stories = [
+            self.news_story(
+                "kyiv-one",
+                "Russia launches drones at Kyiv overnight",
+                "BBC News",
+            ),
+            self.news_story(
+                "kyiv-two",
+                "Kyiv hit in overnight Russian drone attack",
+                "Reuters",
+            ),
+            self.news_story(
+                "startup",
+                "Drone delivery startup launches service in London",
+                "Technology Daily",
+                group="Aggregator",
+            ),
+        ]
+
+        clusters = app.cluster_stories(stories)
+
+        self.assertEqual(sorted(len(cluster) for cluster in clusters), [1, 2])
+
+    def test_reference_count_uses_distinct_outlets_without_feed_bonuses(self) -> None:
+        stories = [
+            self.news_story(
+                "ap-one",
+                "Earthquake triggers emergency response across coastal region",
+                "AP News",
+                group="Aggregator",
+            ),
+            self.news_story(
+                "ap-two",
+                "Coastal region begins emergency response after earthquake",
+                "Associated Press",
+                group="Aggregator",
+            ),
+        ]
+
+        ranked = app.rank_stories(stories, require_high_signal=False)
+
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0].references, 1)
+
+    def test_high_signal_filter_keeps_fast_coverage_and_fresh_major_breaking_news(self) -> None:
+        stories = [
+            self.news_story(
+                "old-single",
+                "Officials continue talks over regional economic plan",
+                "BBC News",
+                hours_ago=18,
+            ),
+            self.news_story(
+                "fresh-single",
+                "Major earthquake triggers emergency response in capital",
+                "Reuters",
+                hours_ago=2,
+            ),
+            self.news_story(
+                "covered-one",
+                "Government coalition collapses after confidence vote",
+                "BBC News",
+                hours_ago=6,
+            ),
+            self.news_story(
+                "covered-two",
+                "Coalition government collapses following confidence vote",
+                "Reuters",
+                hours_ago=5,
+            ),
+        ]
+
+        ranked = app.rank_stories(stories)
+        ranked_ids = {item.story.id for item in ranked}
+
+        self.assertNotIn("old-single", ranked_ids)
+        self.assertIn("fresh-single", ranked_ids)
+        self.assertTrue({"covered-one", "covered-two"}.intersection(ranked_ids))
+
+    def test_prepared_stories_publish_as_each_one_is_appended(self) -> None:
+        batch = []
+        published = []
+        first = object()
+        second = object()
+
+        app.append_prepared_story(batch, first, lambda story, count: published.append((story, count)))
+        app.append_prepared_story(batch, second, lambda story, count: published.append((story, count)))
+
+        self.assertEqual(batch, [first, second])
+        self.assertEqual(published, [(first, 1), (second, 2)])
 
 
 if __name__ == "__main__":
