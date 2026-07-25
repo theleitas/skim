@@ -35,6 +35,15 @@ NO_REPEAT_HOURS = 24
 POPULAR_COVERAGE_HOURS = 24
 FAST_COVERAGE_HOURS = 8
 MAJOR_BREAKING_HOURS = 12
+GDELT_DOC_API_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
+GDELT_TIMEOUT_SECONDS = 20
+GDELT_MAX_RECORDS = 250
+GDELT_QUERY = (
+    '(war OR attack OR election OR coup OR ceasefire OR sanctions OR earthquake OR wildfire '
+    'OR flood OR outbreak OR cyberattack OR protest OR emergency OR tariff OR resignation '
+    'OR "central bank" OR bankruptcy OR merger OR "artificial intelligence" OR "climate change") '
+    "sourcelang:english"
+)
 OPENAI_SUMMARY_MODEL = "gpt-5.6-terra"
 OPENAI_DEEP_MODEL = "gpt-5.6-terra"
 AI_SUMMARY_PROMPT_VERSION = "grounded-article-v1"
@@ -124,7 +133,18 @@ TOPICS = {
     "World": ("world", "war", "conflict", "diplomacy", "election", "government"),
     "US": ("u.s.", "us ", "america", "congress", "white house", "supreme court"),
     "Politics": ("politic", "election", "senate", "president", "minister", "policy"),
-    "Business": ("business", "company", "earnings", "market", "economy", "trade"),
+    "Business": (
+        "business",
+        "company",
+        "earnings",
+        "market",
+        "economy",
+        "trade",
+        "central bank",
+        "bankruptcy",
+        "merger",
+        "tariff",
+    ),
     "Tech": ("technology", "software", "startup", "semiconductor", "cyber"),
     "AI": (" ai ", "artificial intelligence", "openai", "model", "chatbot"),
     "Science": ("science", "space", "research", "study", "nasa", "physics"),
@@ -193,6 +213,27 @@ MAJOR_OUTLET_MARKERS = (
     "wall street journal",
     "washington post",
 )
+
+DOMAIN_SOURCE_NAMES = {
+    "abcnews.go.com": "ABC News",
+    "aljazeera.com": "Al Jazeera",
+    "apnews.com": "Associated Press",
+    "bbc.co.uk": "BBC",
+    "bbc.com": "BBC",
+    "bloomberg.com": "Bloomberg",
+    "cbsnews.com": "CBS News",
+    "cnn.com": "CNN",
+    "dw.com": "Deutsche Welle",
+    "ft.com": "Financial Times",
+    "france24.com": "France 24",
+    "nbcnews.com": "NBC News",
+    "npr.org": "NPR",
+    "nytimes.com": "New York Times",
+    "reuters.com": "Reuters",
+    "theguardian.com": "The Guardian",
+    "washingtonpost.com": "Washington Post",
+    "wsj.com": "Wall Street Journal",
+}
 
 BREAKING_NEWS_TERMS = {
     "airstrike",
@@ -484,6 +525,15 @@ def page_style() -> None:
                 line-height: 1.4;
             }
 
+            .skim-footnote a {
+                color: var(--skim-accent);
+                text-decoration: none;
+            }
+
+            .skim-footnote a:hover {
+                text-decoration: underline;
+            }
+
             div[data-testid="stMetric"] {
                 background: #0f0e0d;
                 border: 1px solid #2c2823;
@@ -557,6 +607,11 @@ def clean_text(value: str | None) -> str:
 def parse_date(value: str | None) -> datetime | None:
     if not value:
         return None
+    if re.fullmatch(r"\d{8}T\d{6}Z", value):
+        try:
+            return datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
     try:
         parsed = parsedate_to_datetime(value)
         if parsed.tzinfo is None:
@@ -629,6 +684,58 @@ def child_image(parent: ET.Element, summary_html: str) -> str | None:
 def stable_id(source_name: str, title: str, link: str) -> str:
     raw = f"{source_name}|{title}|{link}".lower()
     return re.sub(r"[^a-z0-9]+", "-", raw).strip("-")[:96]
+
+
+def source_name_from_domain(domain: str) -> str:
+    host = domain.lower().strip().split(":", 1)[0].removeprefix("www.")
+    for known_domain, source_name in DOMAIN_SOURCE_NAMES.items():
+        if host == known_domain or host.endswith(f".{known_domain}"):
+            return source_name
+
+    parts = [part for part in host.split(".") if part]
+    if not parts:
+        return "GDELT publisher"
+    country_suffix = len(parts) >= 3 and parts[-2] in {"co", "com", "net", "org"}
+    label = parts[-3] if country_suffix else parts[-2] if len(parts) >= 2 else parts[0]
+    label = re.sub(r"[-_]+", " ", label)
+    label = label.replace("dailynews", "daily news").replace("newsdaily", "news daily")
+    return label.title()
+
+
+def inferred_topics_from_text(text: str) -> tuple[str, ...]:
+    haystack = f" {clean_text(text).lower()} "
+    matches = [
+        topic
+        for topic, needles in TOPICS.items()
+        if topic not in {"Reddit Hot", "Hacker News"} and any(needle in haystack for needle in needles)
+    ]
+    return tuple(dict.fromkeys(matches)) or ("World",)
+
+
+def normalized_story_url(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return url.lower().rstrip("/")
+    host = parsed.netloc.lower().removeprefix("www.")
+    path = re.sub(r"/+", "/", parsed.path).rstrip("/")
+    return f"{host}{path}".lower()
+
+
+def deduplicate_stories(stories: Sequence[Story]) -> list[Story]:
+    deduplicated: list[Story] = []
+    seen_urls: set[str] = set()
+    seen_titles: set[tuple[str, str]] = set()
+    for story in stories:
+        url_key = normalized_story_url(story.link)
+        title_key = (outlet_identity(story.source), normalized_story_text(story.title))
+        if (url_key and url_key in seen_urls) or title_key in seen_titles:
+            continue
+        deduplicated.append(story)
+        if url_key:
+            seen_urls.add(url_key)
+        seen_titles.add(title_key)
+    return deduplicated
 
 
 def is_google_news_url(url: str) -> bool:
@@ -794,6 +901,74 @@ def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
     return stories, None
 
 
+def parse_gdelt_articles(payload: object) -> list[Story]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("articles"), list):
+        return []
+
+    stories: list[Story] = []
+    for article in payload["articles"]:
+        if not isinstance(article, dict):
+            continue
+        title = clean_text(str(article.get("title", "")))
+        link = str(article.get("url", "")).strip()
+        language = str(article.get("language", "")).strip().lower()
+        if not title or not link.startswith(("http://", "https://")):
+            continue
+        if language and language != "english":
+            continue
+        domain = str(article.get("domain", "")).strip()
+        source = source_name_from_domain(domain or urllib.parse.urlparse(link).netloc)
+        image_url = str(article.get("socialimage", "")).strip()
+        stories.append(
+            Story(
+                id=stable_id(source, title, link),
+                source=source,
+                group="GDELT",
+                title=title,
+                link=link,
+                summary_text="",
+                published=parse_date(str(article.get("seendate", ""))),
+                topics=inferred_topics_from_text(title),
+                image_url=image_url if image_url.startswith(("http://", "https://")) else None,
+            )
+        )
+    return stories
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_gdelt_stories() -> tuple[list[Story], str | None]:
+    params = urllib.parse.urlencode(
+        {
+            "query": GDELT_QUERY,
+            "mode": "artlist",
+            "format": "json",
+            "maxrecords": GDELT_MAX_RECORDS,
+            "timespan": "24h",
+            "sort": "hybridrel",
+        }
+    )
+    headers = dict(REQUEST_HEADERS)
+    headers["Accept"] = "application/json"
+    request = urllib.request.Request(f"{GDELT_DOC_API_URL}?{params}", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=GDELT_TIMEOUT_SECONDS) as response:
+            raw_payload = response.read(4_000_000).decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            return [], "GDELT global discovery is temporarily rate-limited; the RSS feeds are still active."
+        return [], f"GDELT global discovery: HTTP {exc.code}; the RSS feeds are still active."
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        return [], f"GDELT global discovery: {exc}"
+
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        if "limit requests" in raw_payload.lower():
+            return [], "GDELT global discovery is temporarily rate-limited; the RSS feeds are still active."
+        return [], "GDELT global discovery returned an unreadable response; the RSS feeds are still active."
+    return parse_gdelt_articles(payload), None
+
+
 def keyword_news_source(keyword: str) -> NewsSource:
     query = urllib.parse.quote_plus(keyword.strip())
     return NewsSource(
@@ -809,6 +984,7 @@ def fetch_stories(
     include_aggregators: bool,
     include_social: bool,
     custom_keywords: tuple[str, ...],
+    include_gdelt: bool = True,
 ) -> tuple[list[Story], list[str]]:
     stories: list[Story] = []
     errors: list[str] = []
@@ -826,13 +1002,23 @@ def fetch_stories(
         if error:
             errors.append(error)
 
+    if include_gdelt:
+        gdelt_stories, error = fetch_gdelt_stories()
+        if topic_set:
+            gdelt_stories = [
+                story for story in gdelt_stories if topic_set.intersection(story.topics)
+            ]
+        stories.extend(gdelt_stories)
+        if error:
+            errors.append(error)
+
     for keyword in custom_keywords:
         source_stories, error = fetch_source(keyword_news_source(keyword))
         stories.extend(source_stories)
         if error:
             errors.append(error)
 
-    return stories, errors
+    return deduplicate_stories(stories), errors
 
 
 def fetch_keyword_rankings(custom_keywords: tuple[str, ...]) -> tuple[dict[str, list[RankedStory]], list[str]]:
@@ -970,6 +1156,11 @@ def complete_story_refresh() -> None:
     st.session_state.deep_analyses = {}
 
 
+def load_next_story_batch() -> None:
+    st.session_state.current_cluster_keys = []
+    st.session_state.deep_analyses = {}
+
+
 def keyword_match_count(story: Story, keywords: tuple[str, ...]) -> int:
     if not keywords:
         return 0
@@ -1077,6 +1268,7 @@ def representative_quality(story: Story) -> tuple[int, int, int]:
         "Major News": 4,
         "Social": 3,
         "Aggregator": 2,
+        "GDELT": 2,
         "Custom": 1,
     }.get(story.group, 0)
     return source_priority, direct_publisher_link, substantial_feed_text
@@ -2462,11 +2654,19 @@ def render_ai_cost_summary(target: object) -> None:
 def settings_signature(
     selected_topics: list[str],
     include_aggregators: bool,
+    include_gdelt: bool,
     include_social: bool,
     show_archived: bool,
     keywords: tuple[str, ...],
 ) -> tuple:
-    return (tuple(selected_topics), include_aggregators, include_social, show_archived, keywords)
+    return (
+        tuple(selected_topics),
+        include_aggregators,
+        include_gdelt,
+        include_social,
+        show_archived,
+        keywords,
+    )
 
 
 def utc_now() -> datetime:
@@ -2703,6 +2903,7 @@ def main() -> None:
     st.session_state.setdefault("detail", 3)
     st.session_state.setdefault("include_social", False)
     st.session_state.setdefault("include_aggregators", True)
+    st.session_state.setdefault("include_gdelt", True)
     st.session_state.setdefault("show_archived", False)
     initialize_keyword_state()
     initialize_ai_cost_state()
@@ -2710,8 +2911,14 @@ def main() -> None:
     render_header()
     cost_summary_slot = st.empty()
 
-    if st.button("Complete story refresh", icon=":material/sync:", use_container_width=True):
+    if st.button(
+        "Refresh latest stories",
+        icon=":material/sync:",
+        help="Repoll every live source and build a new briefing without repeating the last 24 hours.",
+        use_container_width=True,
+    ):
         complete_story_refresh()
+        st.rerun()
 
     briefing_status_slot = st.empty()
     batch_timestamp_slot = st.empty()
@@ -2721,16 +2928,30 @@ def main() -> None:
     detail = st.session_state.detail
     include_social = st.session_state.include_social
     include_aggregators = st.session_state.include_aggregators
+    include_gdelt = st.session_state.include_gdelt
     show_archived = st.session_state.show_archived
     keywords = custom_keywords()
 
-    current_settings = settings_signature(selected_topics, include_aggregators, include_social, show_archived, keywords)
+    current_settings = settings_signature(
+        selected_topics,
+        include_aggregators,
+        include_gdelt,
+        include_social,
+        show_archived,
+        keywords,
+    )
     if st.session_state.last_settings != current_settings:
         st.session_state.current_cluster_keys = []
         st.session_state.last_settings = current_settings
 
     with st.spinner("Building a stronger story list..."):
-        stories, errors = fetch_stories(tuple(selected_topics), include_aggregators, include_social, ())
+        stories, errors = fetch_stories(
+            tuple(selected_topics),
+            include_aggregators,
+            include_social,
+            (),
+            include_gdelt,
+        )
         ranked_stories = rank_stories(stories, keywords)
         keyword_rankings, keyword_errors = fetch_keyword_rankings(keywords)
         errors.extend(keyword_errors)
@@ -2773,11 +2994,13 @@ def main() -> None:
     col1, col2, col3 = st.columns([1, 1, 1])
     col1.metric("Stories", len(batch))
     col2.metric("Archived", len(st.session_state.archived))
-    if col3.button("Refresh", icon=":material/refresh:", use_container_width=True):
-        fetch_article_evidence.clear()
-        resolve_article_url.clear()
-        st.session_state.current_cluster_keys = []
-        st.session_state.deep_analyses = {}
+    if col3.button(
+        "Load 15 more",
+        icon=":material/add:",
+        help="Build the next briefing from unseen stories already discovered in this live news pool.",
+        use_container_width=True,
+    ):
+        load_next_story_batch()
         st.rerun()
 
     if errors:
@@ -2797,6 +3020,7 @@ def main() -> None:
         with col2:
             st.toggle("Reddit and Hacker News", key="include_social")
             st.toggle("Google News aggregators", key="include_aggregators")
+            st.toggle("GDELT global discovery", key="include_gdelt")
             st.toggle("Show archived stories", key="show_archived")
             if st.button("Clear 24-hour history", use_container_width=True):
                 st.session_state.shown_cluster_history = {}
@@ -2824,9 +3048,11 @@ def main() -> None:
     st.markdown(
         """
         <p class="skim-footnote">
-            Skim uses public RSS feeds to find stories, reads the publisher article, and uses
-            OpenAI for the headline, summary, and Background. Cards without enough source text
-            or a clean grounded result are left out.
+            Skim uses public RSS feeds and the
+            <a href="https://www.gdeltproject.org/" target="_blank" rel="noopener noreferrer">GDELT Project</a>
+            to find stories, reads the publisher article, and uses OpenAI for the headline,
+            summary, and Background. Cards without enough source text or a clean grounded result
+            are left out.
         </p>
         """,
         unsafe_allow_html=True,

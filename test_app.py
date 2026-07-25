@@ -267,6 +267,57 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertEqual(batch, [first, second])
         self.assertEqual(published, [(first, 1), (second, 2)])
 
+    def test_gdelt_articles_become_direct_publisher_stories(self) -> None:
+        payload = {
+            "articles": [
+                {
+                    "url": "https://www.reuters.com/world/example-story/",
+                    "title": "Central bank announces emergency rate decision",
+                    "seendate": "20260724T193000Z",
+                    "socialimage": "https://www.reuters.com/image.jpg",
+                    "domain": "reuters.com",
+                    "language": "English",
+                    "sourcecountry": "United States",
+                },
+                {
+                    "url": "https://example.com/non-english",
+                    "title": "Noticias internacionales",
+                    "seendate": "20260724T193000Z",
+                    "domain": "example.com",
+                    "language": "Spanish",
+                },
+            ]
+        }
+
+        stories = app.parse_gdelt_articles(payload)
+
+        self.assertEqual(len(stories), 1)
+        self.assertEqual(stories[0].source, "Reuters")
+        self.assertEqual(stories[0].group, "GDELT")
+        self.assertEqual(stories[0].published, datetime(2026, 7, 24, 19, 30, tzinfo=timezone.utc))
+        self.assertIn("Business", stories[0].topics)
+
+    def test_story_deduplication_ignores_tracking_queries(self) -> None:
+        first = self.news_story(
+            "first",
+            "Coalition government collapses after confidence vote",
+            "BBC News",
+        )
+        duplicate = app.Story(
+            id="duplicate",
+            source="BBC News",
+            group="GDELT",
+            title=first.title,
+            link=f"{first.link}?utm_source=gdelt",
+            summary_text="",
+            published=first.published,
+            topics=first.topics,
+        )
+
+        deduplicated = app.deduplicate_stories([first, duplicate])
+
+        self.assertEqual(deduplicated, [first])
+
 
 if __name__ == "__main__":
     unittest.main()

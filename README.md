@@ -18,9 +18,13 @@ Skim can discover feeds without an AI key, but publishing cards requires an AI p
 - GPT-5.6 Terra runs only when you click a story's Deep analysis button.
 - A refresh contains up to 15 high-signal stories plus one additional story for every saved keyword.
 - Main-feed stories must have fast coverage from independent outlets or be fresh, consequential reporting from a major newsroom.
+- The free [GDELT DOC API](https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/)
+  adds broad global discovery from the last 24 hours and uses its publisher-popularity
+  relevance ranking to surface additional candidates.
 - Aggregator and social items no longer receive artificial reference bonuses. Cards show the real number of distinct outlets and reports in each event cluster.
 - Finished cards appear immediately while the remaining publisher articles and AI summaries are still being processed.
 - Stories do not repeat for 24 hours. Repeated reruns of the same batch reuse cached extraction and AI results.
+- **Refresh latest stories** repolls every discovery source on demand. **Load 15 more** advances to the next unseen briefing from the current discovery pool.
 
 Create an OpenAI API key, then set it before starting Streamlit locally:
 
@@ -78,12 +82,18 @@ The news discovery sources and article extractor are token-free. An AI key is re
 - ABC News RSS
 - CBS News RSS
 - Google News RSS
+- GDELT DOC API
 - Reddit RSS
 - Hacker News RSS
 
-Google News is used as a discovery layer, while direct publisher pages remain the evidence
-source for each AI summary. The main ranking favors independent-outlet confirmation,
-coverage velocity, freshness, major-newsroom authority, and concrete breaking-news signals.
+Google News and GDELT are used as discovery layers, while direct publisher pages remain the
+evidence source for each AI summary. GDELT is an
+[open platform available without a fee](https://www.gdeltproject.org/about.html), and its
+public API does not require a key. Skim caches GDELT requests for 10 minutes to respect its
+public rate limit and includes the required GDELT attribution.
+
+The main ranking favors independent-outlet confirmation, coverage velocity, freshness,
+major-newsroom authority, and concrete breaking-news signals.
 
 ## GitHub setup
 
