@@ -478,13 +478,13 @@ def page_style() -> None:
                 padding: 0.72rem 0.78rem 0.72rem 1.2rem;
             }
 
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.category-marker)
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.headline-category)
             > div[data-testid="stVerticalBlock"]::before {
                 content: "";
                 position: absolute;
                 left: 0.48rem;
-                top: 0.52rem;
-                bottom: 0.52rem;
+                top: 0.42rem;
+                bottom: 0.42rem;
                 width: 3px;
                 border-radius: 2px;
                 background: var(--skim-category, var(--skim-accent));
@@ -523,22 +523,22 @@ def page_style() -> None:
                 --skim-category: #ffe600;
             }
 
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) {
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) {
                 background: transparent;
             }
 
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker)
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
             > div[data-testid="stVerticalBlock"] {
-                gap: 0.2rem;
-                padding: 0.46rem 0.55rem 0.64rem 1.05rem;
+                gap: 0.12rem;
+                padding: 0.38rem 0.55rem 0.5rem 1.05rem;
             }
 
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button {
-                justify-content: flex-start;
-                min-height: 2.05rem;
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button {
+                justify-content: flex-start !important;
+                min-height: 1.9rem;
                 height: auto;
                 margin: 0;
-                padding: 0.3rem 0.55rem;
+                padding: 0.22rem 0.55rem;
                 background: #000000;
                 border: 1px solid #5b6169;
                 border-radius: 4px;
@@ -547,26 +547,27 @@ def page_style() -> None:
                 font-size: 1.08rem;
                 font-weight: 550;
                 line-height: 1.22;
-                text-align: left;
+                text-align: left !important;
                 white-space: nowrap;
                 overflow: hidden;
-                text-overflow: ellipsis;
+                text-overflow: clip;
             }
 
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button p {
-                width: 100%;
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button p {
+                display: block !important;
+                width: 100% !important;
                 margin: 0;
                 color: inherit;
                 font: inherit;
-                text-align: left;
-                white-space: inherit;
+                text-align: left !important;
+                white-space: nowrap !important;
                 overflow: hidden;
-                text-overflow: ellipsis;
+                text-overflow: clip !important;
             }
 
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button:hover,
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button:focus,
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button:active {
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button:hover,
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button:focus,
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button:active {
                 background: #090a0c;
                 border-color: #8a9098;
                 box-shadow: none;
@@ -585,10 +586,6 @@ def page_style() -> None:
             .headline-category.category-technology { color: #bb86fc; }
             .headline-category.category-economy { color: #ffe600; }
 
-            .compact-headline-marker {
-                display: none;
-            }
-
             .compact-headline-kicker {
                 display: flex;
                 align-items: center;
@@ -597,12 +594,18 @@ def page_style() -> None:
                 font-size: 0.68rem;
                 font-weight: 700;
                 line-height: 1.1;
-                margin-bottom: 0.08rem;
+                margin-bottom: 0;
                 text-transform: uppercase;
             }
 
             .compact-headline-kicker .headline-category {
                 font-size: 0.72rem;
+            }
+
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
+            [data-testid="stElementContainer"]:has(.compact-headline-kicker) {
+                height: auto !important;
+                min-height: 0.8rem;
             }
 
             .compact-headline-age {
@@ -611,7 +614,7 @@ def page_style() -> None:
                 text-transform: none;
             }
 
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker)
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
             [data-testid="stCaptionContainer"] {
                 color: #8390a1;
                 font-size: 0.7rem;
@@ -620,13 +623,13 @@ def page_style() -> None:
                 padding-bottom: 0.04rem;
             }
 
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker)
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
             [data-testid="stElementContainer"]:has([data-testid="stCaptionContainer"]) {
                 height: auto !important;
                 min-height: 0.95rem;
             }
 
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker)
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
             [data-testid="stCaptionContainer"] p {
                 color: inherit;
                 font-size: inherit;
@@ -852,23 +855,21 @@ def page_style() -> None:
                     line-height: 1.28;
                 }
 
-                .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button {
+                .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button {
                     font-size: 0.98rem;
-                    white-space: normal;
-                    display: -webkit-box;
-                    -webkit-box-orient: vertical;
-                    -webkit-line-clamp: 2;
+                    max-height: 3.15rem;
+                    white-space: normal !important;
+                }
+
+                .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button p {
+                    display: block !important;
+                    max-height: 2.44em;
+                    white-space: normal !important;
                     overflow: hidden;
+                    text-overflow: clip !important;
                 }
 
-                .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button p {
-                    white-space: normal;
-                    display: -webkit-box;
-                    -webkit-box-orient: vertical;
-                    -webkit-line-clamp: 2;
-                }
-
-                .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker)
+                .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
                 [data-testid="stElementContainer"]:has([data-testid="stCaptionContainer"]) {
                     min-height: 1.7rem;
                 }
@@ -2882,8 +2883,7 @@ def render_story_header(
         signal = html.escape(ranked_story.signal_label or "Top story")
         category_label = html.escape(category)
         st.markdown(
-            f'<span class="category-marker compact-headline-marker {category_class}"></span>'
-            '<div class="compact-headline-kicker">'
+            f'<div class="compact-headline-kicker {category_class}">'
             f'<span class="headline-category {category_class}">{category_label}</span>'
             f'<span>{signal}</span>'
             '</div>',
