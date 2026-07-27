@@ -538,10 +538,10 @@ def page_style() -> None:
                 min-height: 1.9rem;
                 height: auto;
                 margin: 0;
-                padding: 0.22rem 0.55rem;
+                padding: 0.18rem 0;
                 background: #000000;
-                border: 1px solid #5b6169;
-                border-radius: 4px;
+                border: 0 !important;
+                border-radius: 0;
                 box-shadow: none;
                 color: #d8d8d8;
                 font-size: 1.08rem;
@@ -551,6 +551,13 @@ def page_style() -> None:
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: clip;
+            }
+
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button > div,
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button span {
+                width: 100%;
+                justify-content: flex-start !important;
+                text-align: left !important;
             }
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button p {
@@ -569,7 +576,7 @@ def page_style() -> None:
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button:focus,
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button:active {
                 background: #090a0c;
-                border-color: #8a9098;
+                border: 0 !important;
                 box-shadow: none;
                 color: #e3e3e3;
             }
