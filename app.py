@@ -483,8 +483,8 @@ def page_style() -> None:
                 content: "";
                 position: absolute;
                 left: 0.48rem;
-                top: 0.42rem;
-                bottom: 0.42rem;
+                top: 0.3rem;
+                bottom: 0.32rem;
                 width: 3px;
                 border-radius: 2px;
                 background: var(--skim-category, var(--skim-accent));
@@ -530,16 +530,16 @@ def page_style() -> None:
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
             > div[data-testid="stVerticalBlock"] {
-                gap: 0.12rem;
-                padding: 0.38rem 0.55rem 0.5rem 1.05rem;
+                gap: 0.06rem;
+                padding: 0.28rem 0.55rem 0.36rem 1.05rem;
             }
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button {
                 justify-content: flex-start !important;
-                min-height: 1.9rem;
+                min-height: 1.72rem;
                 height: auto;
                 margin: 0;
-                padding: 0.18rem 0;
+                padding: 0.08rem 0;
                 background: #000000;
                 border: 0 !important;
                 border-radius: 0;
@@ -623,7 +623,7 @@ def page_style() -> None:
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
             [data-testid="stElementContainer"]:has(.compact-headline-kicker) {
                 height: auto !important;
-                min-height: 0.8rem;
+                min-height: 0.76rem;
             }
 
             .compact-headline-age {
@@ -637,14 +637,14 @@ def page_style() -> None:
                 color: #8390a1;
                 font-size: 0.7rem;
                 line-height: 1.15;
-                margin-top: 0.06rem;
-                padding-bottom: 0.04rem;
+                margin-top: 0;
+                padding-bottom: 0;
             }
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
             [data-testid="stElementContainer"]:has([data-testid="stCaptionContainer"]) {
                 height: auto !important;
-                min-height: 0.95rem;
+                min-height: 0.82rem;
             }
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
@@ -656,7 +656,7 @@ def page_style() -> None:
             }
 
             .st-key-headline_feed {
-                gap: 0.42rem;
+                gap: 0.3rem;
             }
 
             .story-meta {
