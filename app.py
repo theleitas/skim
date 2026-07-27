@@ -544,7 +544,7 @@ def page_style() -> None:
                 border-radius: 0;
                 box-shadow: none;
                 color: #d8d8d8;
-                font-size: 1.08rem;
+                font-size: 1.296rem;
                 font-weight: 550;
                 line-height: 1.22;
                 text-align: left !important;
@@ -560,12 +560,22 @@ def page_style() -> None:
                 text-align: left !important;
             }
 
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button * {
+                font-family: inherit !important;
+                font-size: inherit !important;
+                font-weight: inherit !important;
+                line-height: inherit !important;
+            }
+
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button p {
                 display: block !important;
                 width: 100% !important;
                 margin: 0;
                 color: inherit;
-                font: inherit;
+                font-family: inherit !important;
+                font-size: inherit !important;
+                font-weight: inherit !important;
+                line-height: inherit !important;
                 text-align: left !important;
                 white-space: nowrap !important;
                 overflow: hidden;
@@ -863,7 +873,7 @@ def page_style() -> None:
                 }
 
                 .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button {
-                    font-size: 0.98rem;
+                    font-size: 1.176rem;
                     max-height: 3.15rem;
                     white-space: normal !important;
                 }
