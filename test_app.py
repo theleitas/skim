@@ -337,6 +337,22 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertIn("no available credit", message)
 
+    def test_headline_categories_cover_the_major_sections(self) -> None:
+        stories = (
+            self.news_story("conflict", "Missile attack hits military base", "BBC News"),
+            self.news_story("politics", "Senate votes on White House budget plan", "NPR"),
+            self.news_story("sports", "NBA finals series reaches decisive game", "CBS Sports"),
+            self.news_story("tech", "Artificial intelligence company launches new model", "Tech Daily"),
+            self.news_story("economy", "Central bank signals change in interest rates", "Reuters"),
+        )
+
+        categories = [app.story_category(story) for story in stories]
+
+        self.assertEqual(
+            categories,
+            ["Conflict", "US Politics", "Sports", "Technology", "Economy"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

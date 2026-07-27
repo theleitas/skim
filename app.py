@@ -19,7 +19,7 @@ import streamlit as st
 
 
 APP_NAME = "Skim"
-BATCH_SIZE = 15
+BATCH_SIZE = 20
 ITEMS_PER_SOURCE = 50
 FEED_TIMEOUT_SECONDS = 15
 ARTICLE_TIMEOUT_SECONDS = 15
@@ -266,6 +266,37 @@ BREAKING_NEWS_TERMS = {
     "wildfire",
 }
 
+CATEGORY_COLORS = {
+    "World": "#39ff14",
+    "Conflict": "#ff4f81",
+    "US Politics": "#00e5ff",
+    "Sports": "#ccff00",
+    "Entertainment": "#ff7a00",
+    "Technology": "#bb86fc",
+    "Economy": "#ffe600",
+}
+
+
+def story_category(story: Story) -> str:
+    text = f" {story.title} {story.summary_text} {story.source} ".lower()
+    if any(term in text for term in ("war", "attack", "missile", "airstrike", "ceasefire", "invasion", "drone", "hostage", "military")):
+        return "Conflict"
+    if any(term in text for term in ("congress", "white house", "supreme court", "senate", "governor", "democrat", "republican", "election", "president")):
+        return "US Politics"
+    if any(term in text for term in ("nba", "nfl", "mlb", "baseball", "soccer", "football", "cricket", "tennis", "golf", "olympic", "tour de france")):
+        return "Sports"
+    if any(term in text for term in ("film", "movie", "music", "actor", "actress", "television", "tv", "celebrity", "album", "festival")):
+        return "Entertainment"
+    if any(term in text for term in ("technology", "artificial intelligence", " ai ", "software", "cyber", "semiconductor", "chip", "robot", "space")):
+        return "Technology"
+    if any(term in text for term in ("economy", "market", "earnings", "inflation", "trade", "tariff", "central bank", "bankruptcy", "merger", "company")):
+        return "Economy"
+    return "World"
+
+
+def category_css_class(category: str) -> str:
+    return f"category-{re.sub(r'[^a-z0-9]+', '-', category.lower()).strip('-')}"
+
 
 def page_style() -> None:
     st.markdown(
@@ -384,6 +415,64 @@ def page_style() -> None:
                 box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
             }
 
+            .category-marker {
+                display: none;
+            }
+
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-world) {
+                border-left-color: #39ff14;
+                border-left-width: 4px;
+                box-shadow: -3px 0 12px rgba(57, 255, 20, 0.35);
+            }
+
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-conflict) {
+                border-left-color: #ff4f81;
+                border-left-width: 4px;
+                box-shadow: -3px 0 12px rgba(255, 79, 129, 0.35);
+            }
+
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-us-politics) {
+                border-left-color: #00e5ff;
+                border-left-width: 4px;
+                box-shadow: -3px 0 12px rgba(0, 229, 255, 0.35);
+            }
+
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-sports) {
+                border-left-color: #ccff00;
+                border-left-width: 4px;
+                box-shadow: -3px 0 12px rgba(204, 255, 0, 0.35);
+            }
+
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-entertainment) {
+                border-left-color: #ff7a00;
+                border-left-width: 4px;
+                box-shadow: -3px 0 12px rgba(255, 122, 0, 0.35);
+            }
+
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-technology) {
+                border-left-color: #bb86fc;
+                border-left-width: 4px;
+                box-shadow: -3px 0 12px rgba(187, 134, 252, 0.35);
+            }
+
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-economy) {
+                border-left-color: #ffe600;
+                border-left-width: 4px;
+                box-shadow: -3px 0 12px rgba(255, 230, 0, 0.35);
+            }
+
+            .headline-category {
+                font-weight: 750;
+            }
+
+            .headline-category.category-world { color: #39ff14; }
+            .headline-category.category-conflict { color: #ff4f81; }
+            .headline-category.category-us-politics { color: #00e5ff; }
+            .headline-category.category-sports { color: #ccff00; }
+            .headline-category.category-entertainment { color: #ff7a00; }
+            .headline-category.category-technology { color: #bb86fc; }
+            .headline-category.category-economy { color: #ffe600; }
+
             .story-meta {
                 display: flex;
                 flex-wrap: wrap;
@@ -396,8 +485,8 @@ def page_style() -> None:
             }
 
             .story-title {
-                font-size: 1.45rem;
-                line-height: 1.24;
+                font-size: 1.25rem;
+                line-height: 1.3;
                 margin: 0 0 1rem 0;
                 color: var(--skim-ink);
                 max-width: 34rem;
@@ -428,6 +517,15 @@ def page_style() -> None:
                 line-height: 1.35;
                 margin-top: 0.75rem;
                 margin-bottom: 0.45rem;
+            }
+
+            .headline-expand-row {
+                margin: -0.1rem 0 0.45rem;
+            }
+
+            .headline-brief-divider {
+                border-top: 1px solid #332f29;
+                margin: 0.9rem 0 0.85rem;
             }
 
             .summary-grid {
@@ -585,7 +683,7 @@ def page_style() -> None:
                 }
 
                 .story-title {
-                    font-size: 1.2rem;
+                    font-size: 1.1rem;
                     line-height: 1.28;
                 }
             }
@@ -1154,11 +1252,13 @@ def complete_story_refresh() -> None:
     st.session_state.current_cluster_keys = []
     st.session_state.last_settings = None
     st.session_state.deep_analyses = {}
+    st.session_state.expanded_story_ids = set()
 
 
 def load_next_story_batch() -> None:
     st.session_state.current_cluster_keys = []
     st.session_state.deep_analyses = {}
+    st.session_state.expanded_story_ids = set()
 
 
 def keyword_match_count(story: Story, keywords: tuple[str, ...]) -> int:
@@ -2557,82 +2657,135 @@ def render_summary_value(value: str) -> str:
     return "".join(rendered)
 
 
-def render_story(prepared_story: PreparedStory) -> None:
+def render_story_header(ranked_story: RankedStory, display_headline: str) -> None:
+    story = ranked_story.story
+    category = story_category(story)
+    category_class = category_css_class(category)
+    outlet_word = "outlet" if ranked_story.references == 1 else "outlets"
+    report_word = "report" if ranked_story.topic_story_count == 1 else "reports"
+    meta = (
+        f'<span class="headline-category {category_class}">{html.escape(category)}</span> / '
+        f"{html.escape(story_age(story))} / {ranked_story.references} {outlet_word} / "
+        f"{ranked_story.topic_story_count} {report_word} in this cluster"
+    )
+    st.markdown(
+        f'<span class="category-marker {category_class}"></span><div class="story-meta">{meta}</div>',
+        unsafe_allow_html=True,
+    )
+
+    story_title_text = html.escape(display_headline)
+    if story.image_url:
+        story_title = f'<h2 class="story-title">{story_title_text}</h2>'
+        title_col, image_col = st.columns([3, 1], vertical_alignment="top")
+        with title_col:
+            st.markdown(story_title, unsafe_allow_html=True)
+        with image_col:
+            image_url = html.escape(story.image_url, quote=True)
+            st.markdown(f'<img class="story-image" src="{image_url}" alt="">', unsafe_allow_html=True)
+    else:
+        story_title = f'<h2 class="story-title story-title-full">{story_title_text}</h2>'
+        st.markdown(story_title, unsafe_allow_html=True)
+
+
+def render_story_details(prepared_story: PreparedStory) -> None:
     ranked_story = prepared_story.ranked_story
     story = ranked_story.story
     evidence = prepared_story.evidence
     summary = dict(prepared_story.card)
     archived = story.id in st.session_state.archived
-    with st.container(border=True):
-        outlet_word = "outlet" if ranked_story.references == 1 else "outlets"
-        report_word = "report" if ranked_story.topic_story_count == 1 else "reports"
-        meta = (
-            f"{ranked_story.signal_label or story.group} / {story_age(story)} / "
-            f"{ranked_story.references} {outlet_word} / "
-            f"{ranked_story.topic_story_count} {report_word} in this cluster"
+    display_headline = summary.pop("__headline")
+
+    rows = ""
+    for label, value in summary.items():
+        if label.startswith("__"):
+            continue
+        label_html = "" if label == "Learn More" else (f"<b>{html.escape(label)}:</b> " if label else "")
+        rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
+    st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
+    cost_note = openai_cost_note(story, evidence.text, prepared_story.card)
+    if cost_note:
+        st.markdown(f'<div class="story-ai-cost">{html.escape(cost_note)}</div>', unsafe_allow_html=True)
+
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 1], gap="small", vertical_alignment="top")
+    with col1:
+        st.link_button("Full story", evidence.url, use_container_width=True)
+    with col2:
+        label = "Archived" if archived else "Archive"
+        if st.button(label, key=f"archive-{story.id}", icon=":material/bookmark:", use_container_width=True):
+            if archived:
+                st.session_state.archived.remove(story.id)
+            else:
+                st.session_state.archived.add(story.id)
+            st.rerun()
+    with col3:
+        st.link_button(
+            "Share",
+            share_sms_url(story, evidence.url, display_headline),
+            use_container_width=True,
         )
-        st.markdown(f'<div class="story-meta">{html.escape(meta)}</div>', unsafe_allow_html=True)
-        display_headline = summary.pop("__headline")
-        story_title_text = html.escape(display_headline)
-        if story.image_url:
-            story_title = f'<h2 class="story-title">{story_title_text}</h2>'
-            title_col, image_col = st.columns([3, 1], vertical_alignment="top")
-            with title_col:
-                st.markdown(story_title, unsafe_allow_html=True)
-            with image_col:
-                image_url = html.escape(story.image_url, quote=True)
-                st.markdown(f'<img class="story-image" src="{image_url}" alt="">', unsafe_allow_html=True)
+    with col4:
+        if st.button("Deep analysis", key=f"deep-{story.id}", use_container_width=True):
+            with st.spinner("Building the deeper read..."):
+                try:
+                    st.session_state.deep_analyses[story.id] = deeper_analysis(story, evidence)
+                except Exception as exc:
+                    st.session_state.deep_analyses[story.id] = {
+                        "Deeper analysis": f"The AI provider could not complete this request: {exc}"
+                    }
+
+    if story.id in st.session_state.deep_analyses:
+        deep_rows = ""
+        for label, value in st.session_state.deep_analyses[story.id].items():
+            label_html = f"<b>{html.escape(label)}:</b> "
+            deep_rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
+        st.markdown(f'<div class="summary-grid">{deep_rows}</div>', unsafe_allow_html=True)
+
+    source = f"Source: {story.source}"
+    st.markdown(f'<div class="story-source">{html.escape(source)}</div>', unsafe_allow_html=True)
+
+
+def render_story(prepared_story: PreparedStory) -> None:
+    with st.container(border=True):
+        display_headline = str(prepared_story.card.get("__headline", ""))
+        render_story_header(prepared_story.ranked_story, display_headline)
+        render_story_details(prepared_story)
+
+
+def render_headline_story(ranked_story: RankedStory, detail: int) -> None:
+    story = ranked_story.story
+    expanded_story_ids = set(st.session_state.expanded_story_ids)
+    is_expanded = story.id in expanded_story_ids
+    with st.container(border=True):
+        render_story_header(ranked_story, clean_headline_source(story.title))
+        action_label = "Close brief" if is_expanded else "Expand brief"
+        action_icon = ":material/expand_less:" if is_expanded else ":material/expand_more:"
+        if st.button(action_label, key=f"expand-{story.id}", icon=action_icon, use_container_width=True):
+            if is_expanded:
+                expanded_story_ids.discard(story.id)
+            else:
+                expanded_story_ids.add(story.id)
+            st.session_state.expanded_story_ids = expanded_story_ids
+            st.rerun()
+
+        if not is_expanded:
+            st.markdown(f'<div class="story-source">Source: {html.escape(story.source)}</div>', unsafe_allow_html=True)
+            return
+
+        st.markdown('<div class="headline-brief-divider"></div>', unsafe_allow_html=True)
+        summary_key = f"headline-{st.session_state.batch_refresh_id}-{story.id}"
+        with st.spinner("Reading the publisher article and building this brief..."):
+            prepared, attempted_cost = prepare_ranked_story(ranked_story, detail, summary_key)
+        if prepared:
+            record_batch_ai_cost([prepared], summary_key, attempted_cost)
+            render_story_details(prepared)
+            return
+
+        if not configured_ai_provider():
+            st.info("Add OPENAI_API_KEY in Streamlit secrets to generate this brief.")
+        elif st.session_state.generation_issues:
+            st.error("Skim could not generate this brief. Open Feed notes below for the exact reason.")
         else:
-            story_title = f'<h2 class="story-title story-title-full">{story_title_text}</h2>'
-            st.markdown(story_title, unsafe_allow_html=True)
-
-        rows = ""
-        for label, value in summary.items():
-            if label.startswith("__"):
-                continue
-            label_html = "" if label == "Learn More" else (f"<b>{html.escape(label)}:</b> " if label else "")
-            rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
-        st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
-        cost_note = openai_cost_note(story, evidence.text, prepared_story.card)
-        if cost_note:
-            st.markdown(f'<div class="story-ai-cost">{html.escape(cost_note)}</div>', unsafe_allow_html=True)
-
-        col1, col2, col3, col4 = st.columns([1, 1, 1, 1], gap="small", vertical_alignment="top")
-        with col1:
-            st.link_button("Full story", evidence.url, use_container_width=True)
-        with col2:
-            label = "Archived" if archived else "Archive"
-            if st.button(label, key=f"archive-{story.id}", icon=":material/bookmark:", use_container_width=True):
-                if archived:
-                    st.session_state.archived.remove(story.id)
-                else:
-                    st.session_state.archived.add(story.id)
-                st.rerun()
-        with col3:
-            st.link_button(
-                "Share",
-                share_sms_url(story, evidence.url, display_headline),
-                use_container_width=True,
-            )
-        with col4:
-            if st.button("Deep analysis", key=f"deep-{story.id}", use_container_width=True):
-                with st.spinner("Building the deeper read..."):
-                    try:
-                        st.session_state.deep_analyses[story.id] = deeper_analysis(story, evidence)
-                    except Exception as exc:
-                        st.session_state.deep_analyses[story.id] = {
-                            "Deeper analysis": f"The AI provider could not complete this request: {exc}"
-                        }
-
-        if story.id in st.session_state.deep_analyses:
-            deep_rows = ""
-            for label, value in st.session_state.deep_analyses[story.id].items():
-                label_html = f"<b>{html.escape(label)}:</b> "
-                deep_rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
-            st.markdown(f'<div class="summary-grid">{deep_rows}</div>', unsafe_allow_html=True)
-
-        source = f"Source: {story.source}"
-        st.markdown(f'<div class="story-source">{html.escape(source)}</div>', unsafe_allow_html=True)
+            st.warning("This publisher page did not provide enough usable article text for a grounded brief.")
 
 
 def render_header() -> None:
@@ -2785,8 +2938,8 @@ def render_batch_timestamp(batch_size: int) -> None:
     label = batch_refreshed_label()
     if not label:
         return
-    story_word = "article" if batch_size == 1 else "articles"
-    st.caption(f"{batch_size} {story_word} refreshed: {label} · No repeats for {NO_REPEAT_HOURS} hours")
+    headline_word = "headline" if batch_size == 1 else "headlines"
+    st.caption(f"{batch_size} {headline_word} refreshed: {label} · No repeats for {NO_REPEAT_HOURS} hours")
 
 
 def ranked_item_is_available(item: RankedStory, show_archived: bool, blocked_cluster_keys: set[str]) -> bool:
@@ -2906,6 +3059,31 @@ def build_publishable_batch(
     return batch
 
 
+def build_headline_batch(
+    ranked_stories: list[RankedStory],
+    show_archived: bool,
+) -> list[RankedStory]:
+    prune_shown_cluster_history()
+    current = current_batch_from_keys(ranked_stories, {}, show_archived)
+    if current:
+        return current
+
+    shown_cluster_keys = set(st.session_state.shown_cluster_history)
+    batch: list[RankedStory] = []
+    used_cluster_keys: set[str] = set()
+    for item in ranked_stories:
+        if len(batch) >= BATCH_SIZE:
+            break
+        if ranked_item_is_available(item, show_archived, shown_cluster_keys | used_cluster_keys):
+            batch.append(item)
+            used_cluster_keys.add(item.cluster_key)
+
+    refresh_key = utc_now().isoformat()
+    st.session_state.current_cluster_keys = [item.cluster_key for item in batch]
+    mark_batch_shown(batch, refresh_key)
+    return batch
+
+
 def main() -> None:
     st.set_page_config(page_title=APP_NAME, page_icon="S", layout="centered")
     page_style()
@@ -2918,6 +3096,8 @@ def main() -> None:
         st.session_state.last_settings = None
     if "deep_analyses" not in st.session_state:
         st.session_state.deep_analyses = {}
+    if "expanded_story_ids" not in st.session_state:
+        st.session_state.expanded_story_ids = set()
     if "generation_issues" not in st.session_state:
         st.session_state.generation_issues = []
     if "shown_cluster_history" not in st.session_state:
@@ -2952,7 +3132,6 @@ def main() -> None:
         complete_story_refresh()
         st.rerun()
 
-    briefing_status_slot = st.empty()
     batch_timestamp_slot = st.empty()
     story_stream = st.container()
 
@@ -2981,62 +3160,36 @@ def main() -> None:
             tuple(selected_topics),
             include_aggregators,
             include_social,
-            (),
+            keywords,
             include_gdelt,
         )
         ranked_stories = rank_stories(stories, keywords)
-        keyword_rankings, keyword_errors = fetch_keyword_rankings(keywords)
-        errors.extend(keyword_errors)
 
-    def publish_story(prepared_story: PreparedStory, ready_count: int) -> None:
-        briefing_status_slot.markdown(
-            f'<div class="build-progress">{ready_count} ready · building the rest of the briefing...</div>',
-            unsafe_allow_html=True,
-        )
-        with story_stream:
-            render_story(prepared_story)
-
-    briefing_status_slot.markdown(
-        '<div class="build-progress">Reading the strongest candidates...</div>',
-        unsafe_allow_html=True,
-    )
+    batch = build_headline_batch(ranked_stories, show_archived)
     st.session_state.generation_issues = []
-    batch = build_publishable_batch(
-        ranked_stories,
-        keyword_rankings,
-        show_archived,
-        detail,
-        on_story=publish_story,
-    )
-    briefing_status_slot.empty()
+    with story_stream:
+        for ranked_story in batch:
+            render_headline_story(ranked_story, detail)
+
     render_ai_cost_summary(cost_summary_slot)
     with batch_timestamp_slot.container():
         render_batch_timestamp(len(batch))
 
     errors.extend(st.session_state.generation_issues)
     if not batch:
-        if not configured_ai_provider():
-            st.info("Add OPENAI_API_KEY and set SKIM_AI_PROVIDER to openai in Streamlit secrets.")
-        elif st.session_state.generation_issues:
-            st.error(
-                "Skim found live news candidates, but its AI summaries could not be generated. "
-                "Open Feed notes below for the exact reason."
-            )
-        else:
-            st.info(
-                "No new stories passed the full-article and AI quality checks for this setup. "
-                f"Skim also will not repeat stories shown in the last {NO_REPEAT_HOURS} hours. "
-                "Open Customize to broaden the topics or source types."
-            )
+        st.info(
+            f"No new headlines are available under the {NO_REPEAT_HOURS}-hour no-repeat rule. "
+            "Open Customize to broaden topics or clear the history."
+        )
     st.divider()
 
     col1, col2, col3 = st.columns([1, 1, 1])
-    col1.metric("Stories", len(batch))
+    col1.metric("Headlines", len(batch))
     col2.metric("Archived", len(st.session_state.archived))
     if col3.button(
-        "Load 15 more",
+        "Load 20 more",
         icon=":material/add:",
-        help="Build the next briefing from unseen stories already discovered in this live news pool.",
+        help="Show the next unseen 20 headlines from the current discovery pool.",
         use_container_width=True,
     ):
         load_next_story_batch()
@@ -3070,7 +3223,7 @@ def main() -> None:
                 st.session_state.current_cluster_keys = []
                 st.rerun()
         st.markdown("Keyword boosters")
-        st.caption("Each saved keyword adds one extra trending article beyond the high-signal main feed.")
+        st.caption("Saved keywords influence which headlines rise into the 20-item list.")
         for row_index in range(3):
             cols = st.columns(3)
             for col_index, col in enumerate(cols):

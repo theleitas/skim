@@ -16,15 +16,15 @@ Skim can discover feeds without an AI key, but publishing cards requires an AI p
 - GPT-5.6 Terra writes the display headline, story summary, and Background from that article text.
 - A strict quality check rejects promotional fragments, meta commentary, abrupt headlines, generic Background text, and incomplete prose. One AI repair is attempted before the candidate is skipped.
 - GPT-5.6 Terra runs only when you click a story's Deep analysis button.
-- A refresh contains up to 15 high-signal stories plus one additional story for every saved keyword.
+- A refresh contains 20 high-signal clustered headlines. Opening one reads the publisher page and generates that headline's AI brief on demand.
 - Main-feed stories must have fast coverage from independent outlets or be fresh, consequential reporting from a major newsroom.
 - The free [GDELT DOC API](https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/)
   adds broad global discovery from the last 24 hours and uses its publisher-popularity
   relevance ranking to surface additional candidates.
 - Aggregator and social items no longer receive artificial reference bonuses. Cards show the real number of distinct outlets and reports in each event cluster.
-- Finished cards appear immediately while the remaining publisher articles and AI summaries are still being processed.
+- The starting feed does not call AI. Publisher-page extraction and the AI brief happen only when you expand a headline.
 - Stories do not repeat for 24 hours. Repeated reruns of the same batch reuse cached extraction and AI results.
-- **Refresh latest stories** repolls every discovery source on demand. **Load 15 more** advances to the next unseen briefing from the current discovery pool.
+- **Refresh latest stories** repolls every discovery source on demand. **Load 20 more** advances to the next unseen headline list from the current discovery pool.
 
 Create an OpenAI API key, then set it before starting Streamlit locally:
 
