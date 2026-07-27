@@ -461,6 +461,22 @@ def page_style() -> None:
                 box-shadow: -3px 0 12px rgba(255, 230, 0, 0.35);
             }
 
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.compact-headline-marker) {
+                background: transparent;
+                border-width: 0 0 1px 4px;
+                border-radius: 0;
+                box-shadow: none;
+                padding: 0.55rem 0.85rem 0.6rem;
+            }
+
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.compact-headline-marker) button {
+                min-height: 1.85rem;
+                margin-top: 0.33rem;
+                padding: 0.22rem 0.5rem;
+                font-size: 0.7rem;
+                line-height: 1;
+            }
+
             .headline-category {
                 font-weight: 750;
             }
@@ -472,6 +488,49 @@ def page_style() -> None:
             .headline-category.category-entertainment { color: #ff7a00; }
             .headline-category.category-technology { color: #bb86fc; }
             .headline-category.category-economy { color: #ffe600; }
+
+            .compact-headline-marker {
+                display: none;
+            }
+
+            .compact-headline-kicker {
+                display: flex;
+                align-items: center;
+                gap: 0.4rem;
+                color: var(--skim-muted);
+                font-size: 0.68rem;
+                font-weight: 700;
+                line-height: 1.1;
+                margin-bottom: 0.35rem;
+                text-transform: uppercase;
+            }
+
+            .compact-headline-kicker .headline-category {
+                font-size: 0.72rem;
+            }
+
+            .compact-headline-age {
+                color: #6f7f92;
+                margin-left: auto;
+                text-transform: none;
+            }
+
+            .compact-headline-title {
+                color: var(--skim-ink);
+                font-size: 0.98rem;
+                font-weight: 700;
+                line-height: 1.2;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .compact-headline-coverage {
+                color: #8390a1;
+                font-size: 0.74rem;
+                line-height: 1.15;
+                margin-top: 0.3rem;
+            }
 
             .story-meta {
                 display: flex;
@@ -685,6 +744,10 @@ def page_style() -> None:
                 .story-title {
                     font-size: 1.1rem;
                     line-height: 1.28;
+                }
+
+                .compact-headline-title {
+                    font-size: 0.88rem;
                 }
             }
         </style>
@@ -2657,12 +2720,31 @@ def render_summary_value(value: str) -> str:
     return "".join(rendered)
 
 
-def render_story_header(ranked_story: RankedStory, display_headline: str) -> None:
+def render_story_header(ranked_story: RankedStory, display_headline: str, compact: bool = False) -> None:
     story = ranked_story.story
     category = story_category(story)
     category_class = category_css_class(category)
     outlet_word = "outlet" if ranked_story.references == 1 else "outlets"
     report_word = "report" if ranked_story.topic_story_count == 1 else "reports"
+    if compact:
+        signal = html.escape(ranked_story.signal_label or "Top story")
+        title = html.escape(display_headline)
+        age = html.escape(story_age(story))
+        category_label = html.escape(category)
+        st.markdown(
+            f'<span class="category-marker compact-headline-marker {category_class}"></span>'
+            '<div class="compact-headline-kicker">'
+            f'<span class="headline-category {category_class}">{category_label}</span>'
+            f'<span>{signal}</span>'
+            f'<span class="compact-headline-age">{age}</span>'
+            '</div>'
+            f'<div class="compact-headline-title">{title}</div>'
+            f'<div class="compact-headline-coverage">{ranked_story.references} {outlet_word} · '
+            f'{ranked_story.topic_story_count} {report_word} in this cluster</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
     meta = (
         f'<span class="headline-category {category_class}">{html.escape(category)}</span> / '
         f"{html.escape(story_age(story))} / {ranked_story.references} {outlet_word} / "
@@ -2756,10 +2838,19 @@ def render_headline_story(ranked_story: RankedStory, detail: int) -> None:
     expanded_story_ids = set(st.session_state.expanded_story_ids)
     is_expanded = story.id in expanded_story_ids
     with st.container(border=True):
-        render_story_header(ranked_story, clean_headline_source(story.title))
-        action_label = "Close brief" if is_expanded else "Expand brief"
+        action_label = "Close" if is_expanded else "Expand"
         action_icon = ":material/expand_less:" if is_expanded else ":material/expand_more:"
-        if st.button(action_label, key=f"expand-{story.id}", icon=action_icon, use_container_width=True):
+        if is_expanded:
+            render_story_header(ranked_story, clean_headline_source(story.title))
+            action_pressed = st.button(action_label, key=f"expand-{story.id}", icon=action_icon)
+        else:
+            headline_col, action_col = st.columns([8, 1], gap="small", vertical_alignment="top")
+            with headline_col:
+                render_story_header(ranked_story, clean_headline_source(story.title), compact=True)
+            with action_col:
+                action_pressed = st.button(action_label, key=f"expand-{story.id}", icon=action_icon, use_container_width=True)
+
+        if action_pressed:
             if is_expanded:
                 expanded_story_ids.discard(story.id)
             else:
@@ -2768,7 +2859,6 @@ def render_headline_story(ranked_story: RankedStory, detail: int) -> None:
             st.rerun()
 
         if not is_expanded:
-            st.markdown(f'<div class="story-source">Source: {html.escape(story.source)}</div>', unsafe_allow_html=True)
             return
 
         st.markdown('<div class="headline-brief-divider"></div>', unsafe_allow_html=True)
