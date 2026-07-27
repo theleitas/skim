@@ -491,8 +491,9 @@ def page_style() -> None:
                 box-shadow: 0 0 8px color-mix(in srgb, var(--skim-category, var(--skim-accent)) 55%, transparent);
             }
 
-            .category-marker {
-                display: none;
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.story-meta)
+            > div[data-testid="stVerticalBlock"]::before {
+                top: 0.782rem;
             }
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.category-world) {
@@ -670,9 +671,9 @@ def page_style() -> None:
             }
 
             .story-title {
-                font-size: 1.25rem;
-                line-height: 1.3;
-                margin: 0 0 1rem 0;
+                font-size: 1.575rem !important;
+                line-height: 1.2 !important;
+                margin: 0 0 0.55rem 0 !important;
                 color: var(--skim-ink);
                 max-width: 34rem;
                 display: -webkit-box;
@@ -868,8 +869,8 @@ def page_style() -> None:
                 }
 
                 .story-title {
-                    font-size: 1.1rem;
-                    line-height: 1.28;
+                    font-size: 1.575rem !important;
+                    line-height: 1.2 !important;
                 }
 
                 .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button {
@@ -2924,7 +2925,7 @@ def render_story_header(
         f"{html.escape(story_age(story))}"
     )
     st.markdown(
-        f'<span class="category-marker {category_class}"></span><div class="story-meta">{meta}</div>',
+        f'<div class="story-meta">{meta}</div>',
         unsafe_allow_html=True,
     )
 
