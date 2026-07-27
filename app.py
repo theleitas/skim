@@ -545,13 +545,21 @@ def page_style() -> None:
                 border-radius: 0;
                 box-shadow: none;
                 color: #d8d8d8;
-                font-size: 1.296rem;
+                font-size: 1.1664rem;
                 font-weight: 550;
                 line-height: 1.22;
                 text-align: left !important;
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: clip;
+            }
+
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.headline-long) button {
+                font-size: 1.15rem;
+            }
+
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.headline-extra-long) button {
+                font-size: 1.02rem;
             }
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button > div,
@@ -886,7 +894,7 @@ def page_style() -> None:
                 }
 
                 .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button {
-                    font-size: 1.176rem;
+                    font-size: 1.0584rem;
                     max-height: 3.15rem;
                     white-space: normal !important;
                 }
@@ -2912,8 +2920,15 @@ def render_story_header(
     if compact:
         signal = html.escape(ranked_story.signal_label or "Top story")
         category_label = html.escape(category)
+        headline_length_class = (
+            "headline-extra-long"
+            if len(display_headline) > 105
+            else "headline-long"
+            if len(display_headline) > 95
+            else ""
+        )
         st.markdown(
-            f'<div class="compact-headline-kicker {category_class}">'
+            f'<div class="compact-headline-kicker {category_class} {headline_length_class}">'
             f'<span class="headline-category {category_class}">{category_label}</span>'
             f'<span>{signal}</span>'
             '</div>',
