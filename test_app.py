@@ -353,6 +353,21 @@ class ArticlePipelineTests(unittest.TestCase):
             ["Conflict", "US Politics", "Sports", "Technology", "Economy"],
         )
 
+    def test_coverage_outlet_text_lists_three_then_remaining_outlets(self) -> None:
+        ranked = app.RankedStory(
+            story=self.news_story("coverage", "A widely covered story", "BBC News"),
+            cluster_key="coverage",
+            references=5,
+            topic_story_count=5,
+            score=1.0,
+            outlets=("BBC News", "Reuters", "The Guardian", "NPR", "CNN"),
+        )
+
+        self.assertEqual(
+            app.coverage_outlet_text(ranked),
+            "BBC News, Reuters, The Guardian · 2 more outlets",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

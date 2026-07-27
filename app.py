@@ -106,6 +106,7 @@ class RankedStory:
     score: float
     coverage_span_hours: float = 0.0
     signal_label: str = ""
+    outlets: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -276,22 +277,75 @@ CATEGORY_COLORS = {
     "Economy": "#ffe600",
 }
 
+CATEGORY_TERMS = {
+    "Conflict": (
+        "airstrike", "armed conflict", "attack", "bombing", "ceasefire", "drone strike",
+        "hostage", "invasion", "military", "missile", "rocket fire", "troops", "truce",
+        "war", "warfare", "weapons",
+    ),
+    "US Politics": (
+        "biden", "capitol hill", "congress", "democratic party", "department of justice",
+        "doj", "federal judge", "house of representatives", "republican party", "senate",
+        "supreme court", "trump", "u.s. election", "us election", "white house",
+    ),
+    "Sports": (
+        "athlete", "baseball", "basketball", "coach", "cricket", "fifa", "formula 1",
+        "golf", "hall of fame", "mlb", "mma", "nba", "nfl", "nhl", "olympic",
+        "premier league", "soccer", "tennis", "tour de france", "world cup",
+    ),
+    "Entertainment": (
+        "actor", "actress", "album", "box office", "celebrity", "concert", "film",
+        "movie", "music", "musician", "netflix", "television", "tv series",
+    ),
+    "Technology": (
+        "artificial intelligence", "chipmaker", "cyberattack", "cybersecurity", "data breach",
+        "generative ai", "openai", "robot", "semiconductor", "software", "spacecraft",
+        "startup", "technology",
+    ),
+    "Economy": (
+        "acquisition", "bankruptcy", "central bank", "currency", "earnings", "economy",
+        "federal reserve", "gdp", "inflation", "interest rates", "ipo", "merger",
+        "oil prices", "profit", "recession", "revenue", "shares", "stock market", "stocks",
+        "tariff", "trade deal", "unemployment",
+    ),
+}
+
+CATEGORY_SOURCE_HINTS = {
+    "Sports": ("espn", "sports"),
+    "Entertainment": ("billboard", "hollywood", "rolling stone", "variety"),
+    "Technology": ("technology", "techcrunch", "the verge", "wired"),
+    "Economy": ("bloomberg", "business", "cnbc", "financial times", "wall street journal"),
+}
+
+CATEGORY_TIEBREAK_ORDER = (
+    "Conflict",
+    "US Politics",
+    "Sports",
+    "Entertainment",
+    "Technology",
+    "Economy",
+)
+
+
+def category_term_score(text: str, term: str) -> int:
+    return int(bool(re.search(rf"\b{re.escape(term)}\b", text)))
+
 
 def story_category(story: Story) -> str:
-    text = f" {story.title} {story.summary_text} {story.source} ".lower()
-    if any(term in text for term in ("war", "attack", "missile", "airstrike", "ceasefire", "invasion", "drone", "hostage", "military")):
-        return "Conflict"
-    if any(term in text for term in ("congress", "white house", "supreme court", "senate", "governor", "democrat", "republican", "election", "president")):
-        return "US Politics"
-    if any(term in text for term in ("nba", "nfl", "mlb", "baseball", "soccer", "football", "cricket", "tennis", "golf", "olympic", "tour de france")):
-        return "Sports"
-    if any(term in text for term in ("film", "movie", "music", "actor", "actress", "television", "tv", "celebrity", "album", "festival")):
-        return "Entertainment"
-    if any(term in text for term in ("technology", "artificial intelligence", " ai ", "software", "cyber", "semiconductor", "chip", "robot", "space")):
-        return "Technology"
-    if any(term in text for term in ("economy", "market", "earnings", "inflation", "trade", "tariff", "central bank", "bankruptcy", "merger", "company")):
-        return "Economy"
-    return "World"
+    text = clean_text(f"{story.title} {story.summary_text}").lower()
+    source = story.source.lower()
+    scores = {
+        category: sum(category_term_score(text, term) for term in terms)
+        for category, terms in CATEGORY_TERMS.items()
+    }
+    for category, source_hints in CATEGORY_SOURCE_HINTS.items():
+        if any(hint in source for hint in source_hints):
+            scores[category] += 2
+
+    best_score = max(scores.values(), default=0)
+    if best_score == 0:
+        return "World"
+    return next(category for category in CATEGORY_TIEBREAK_ORDER if scores[category] == best_score)
 
 
 def category_css_class(category: str) -> str:
@@ -470,11 +524,29 @@ def page_style() -> None:
             }
 
             [data-testid="stVerticalBlockBorderWrapper"]:has(.compact-headline-marker) button {
-                min-height: 1.85rem;
-                margin-top: 0.33rem;
-                padding: 0.22rem 0.5rem;
-                font-size: 0.7rem;
-                line-height: 1;
+                min-height: 0;
+                margin: 0;
+                padding: 0;
+                background: transparent;
+                border: 0;
+                box-shadow: none;
+                color: var(--skim-ink);
+                font-size: 0.98rem;
+                font-weight: 700;
+                line-height: 1.2;
+                text-align: left;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.compact-headline-marker) button:hover,
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.compact-headline-marker) button:focus,
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.compact-headline-marker) button:active {
+                background: transparent;
+                border: 0;
+                box-shadow: none;
+                color: var(--skim-ink);
             }
 
             .headline-category {
@@ -513,16 +585,6 @@ def page_style() -> None:
                 color: #6f7f92;
                 margin-left: auto;
                 text-transform: none;
-            }
-
-            .compact-headline-title {
-                color: var(--skim-ink);
-                font-size: 0.98rem;
-                font-weight: 700;
-                line-height: 1.2;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
             }
 
             .compact-headline-coverage {
@@ -746,8 +808,13 @@ def page_style() -> None:
                     line-height: 1.28;
                 }
 
-                .compact-headline-title {
+                [data-testid="stVerticalBlockBorderWrapper"]:has(.compact-headline-marker) button {
                     font-size: 0.88rem;
+                    white-space: normal;
+                    display: -webkit-box;
+                    -webkit-box-orient: vertical;
+                    -webkit-line-clamp: 2;
+                    overflow: hidden;
                 }
             }
         </style>
@@ -1490,6 +1557,17 @@ def rank_stories(
                 ),
             ),
         )
+        outlet_names: list[str] = []
+        seen_outlets: set[str] = set()
+        for clustered_story in sorted(
+            cluster,
+            key=lambda item: (item != representative, not is_major_outlet(item), item.source.lower()),
+        ):
+            identity = outlet_identity(clustered_story.source)
+            if identity in seen_outlets:
+                continue
+            seen_outlets.add(identity)
+            outlet_names.append(clustered_story.source)
         ranked.append(
             RankedStory(
                 story=representative,
@@ -1505,6 +1583,7 @@ def rank_stories(
                 ),
                 coverage_span_hours=coverage_span_hours,
                 signal_label=cluster_signal_label(cluster, references, coverage_span_hours),
+                outlets=tuple(outlet_names),
             )
         )
 
@@ -2720,7 +2799,25 @@ def render_summary_value(value: str) -> str:
     return "".join(rendered)
 
 
-def render_story_header(ranked_story: RankedStory, display_headline: str, compact: bool = False) -> None:
+def coverage_outlet_text(ranked_story: RankedStory) -> str:
+    names = list(ranked_story.outlets[:3])
+    if not names:
+        outlet_word = "outlet" if ranked_story.references == 1 else "outlets"
+        return f"{ranked_story.references} {outlet_word}"
+    remaining = max(0, ranked_story.references - len(names))
+    label = ", ".join(names)
+    if remaining:
+        outlet_word = "outlet" if remaining == 1 else "outlets"
+        label += f" · {remaining} more {outlet_word}"
+    return label
+
+
+def render_story_header(
+    ranked_story: RankedStory,
+    display_headline: str,
+    compact: bool = False,
+    headline_button_key: str | None = None,
+) -> bool:
     story = ranked_story.story
     category = story_category(story)
     category_class = category_css_class(category)
@@ -2728,22 +2825,28 @@ def render_story_header(ranked_story: RankedStory, display_headline: str, compac
     report_word = "report" if ranked_story.topic_story_count == 1 else "reports"
     if compact:
         signal = html.escape(ranked_story.signal_label or "Top story")
-        title = html.escape(display_headline)
         age = html.escape(story_age(story))
         category_label = html.escape(category)
+        outlets = html.escape(coverage_outlet_text(ranked_story))
         st.markdown(
             f'<span class="category-marker compact-headline-marker {category_class}"></span>'
             '<div class="compact-headline-kicker">'
             f'<span class="headline-category {category_class}">{category_label}</span>'
             f'<span>{signal}</span>'
-            f'<span class="compact-headline-age">{age}</span>'
-            '</div>'
-            f'<div class="compact-headline-title">{title}</div>'
-            f'<div class="compact-headline-coverage">{ranked_story.references} {outlet_word} · '
-            f'{ranked_story.topic_story_count} {report_word} in this cluster</div>',
+            '</div>',
             unsafe_allow_html=True,
         )
-        return
+        pressed = st.button(
+            display_headline,
+            key=headline_button_key,
+            use_container_width=True,
+        )
+        st.markdown(
+            f'<div class="compact-headline-coverage">{outlets} · '
+            f'{ranked_story.topic_story_count} {report_word} in this cluster · {age}</div>',
+            unsafe_allow_html=True,
+        )
+        return pressed
 
     meta = (
         f'<span class="headline-category {category_class}">{html.escape(category)}</span> / '
@@ -2767,6 +2870,7 @@ def render_story_header(ranked_story: RankedStory, display_headline: str, compac
     else:
         story_title = f'<h2 class="story-title story-title-full">{story_title_text}</h2>'
         st.markdown(story_title, unsafe_allow_html=True)
+    return False
 
 
 def render_story_details(prepared_story: PreparedStory) -> None:
@@ -2784,9 +2888,6 @@ def render_story_details(prepared_story: PreparedStory) -> None:
         label_html = "" if label == "Learn More" else (f"<b>{html.escape(label)}:</b> " if label else "")
         rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
     st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
-    cost_note = openai_cost_note(story, evidence.text, prepared_story.card)
-    if cost_note:
-        st.markdown(f'<div class="story-ai-cost">{html.escape(cost_note)}</div>', unsafe_allow_html=True)
 
     col1, col2, col3, col4 = st.columns([1, 1, 1, 1], gap="small", vertical_alignment="top")
     with col1:
@@ -2838,17 +2939,16 @@ def render_headline_story(ranked_story: RankedStory, detail: int) -> None:
     expanded_story_ids = set(st.session_state.expanded_story_ids)
     is_expanded = story.id in expanded_story_ids
     with st.container(border=True):
-        action_label = "Close" if is_expanded else "Expand"
-        action_icon = ":material/expand_less:" if is_expanded else ":material/expand_more:"
         if is_expanded:
             render_story_header(ranked_story, clean_headline_source(story.title))
-            action_pressed = st.button(action_label, key=f"expand-{story.id}", icon=action_icon)
+            action_pressed = st.button("Close brief", key=f"expand-{story.id}", icon=":material/expand_less:")
         else:
-            headline_col, action_col = st.columns([8, 1], gap="small", vertical_alignment="top")
-            with headline_col:
-                render_story_header(ranked_story, clean_headline_source(story.title), compact=True)
-            with action_col:
-                action_pressed = st.button(action_label, key=f"expand-{story.id}", icon=action_icon, use_container_width=True)
+            action_pressed = render_story_header(
+                ranked_story,
+                clean_headline_source(story.title),
+                compact=True,
+                headline_button_key=f"expand-{story.id}",
+            )
 
         if action_pressed:
             if is_expanded:
@@ -3211,7 +3311,6 @@ def main() -> None:
     initialize_ai_cost_state()
 
     render_header()
-    cost_summary_slot = st.empty()
 
     if st.button(
         "Refresh latest stories",
@@ -3261,7 +3360,6 @@ def main() -> None:
         for ranked_story in batch:
             render_headline_story(ranked_story, detail)
 
-    render_ai_cost_summary(cost_summary_slot)
     with batch_timestamp_slot.container():
         render_batch_timestamp(len(batch))
 
@@ -3343,6 +3441,7 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
+    render_ai_cost_summary(st)
 
 
 if __name__ == "__main__":
