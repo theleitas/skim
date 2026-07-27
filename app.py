@@ -23,10 +23,11 @@ BATCH_SIZE = 20
 ITEMS_PER_SOURCE = 50
 FEED_TIMEOUT_SECONDS = 15
 ARTICLE_TIMEOUT_SECONDS = 15
-ARTICLE_MAX_BYTES = 1_500_000
+ARTICLE_MAX_BYTES = 3_000_000
 ARTICLE_MAX_WORDS = 3_000
-MIN_ARTICLE_WORDS = 160
-MIN_ARTICLE_SENTENCES = 4
+MIN_ARTICLE_WORDS = 120
+MIN_ARTICLE_SENTENCES = 3
+MAX_ARTICLE_CANDIDATES = 5
 MAX_BASE_CANDIDATES = 40
 MAX_KEYWORD_CANDIDATES = 10
 MIN_SUMMARY_WORDS = 18
@@ -107,6 +108,7 @@ class RankedStory:
     coverage_span_hours: float = 0.0
     signal_label: str = ""
     outlets: tuple[str, ...] = ()
+    article_candidates: tuple[Story, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -122,6 +124,7 @@ class PreparedStory:
     ranked_story: RankedStory
     evidence: ArticleEvidence
     card: dict[str, str]
+    article_story: Story | None = None
 
 
 @dataclass(frozen=True)
@@ -1599,6 +1602,20 @@ def representative_quality(story: Story) -> tuple[int, int, int]:
     return source_priority, direct_publisher_link, substantial_feed_text
 
 
+def article_candidate_quality(story: Story) -> tuple[int, int, int]:
+    """Favor links Skim can read directly before aggregator redirects."""
+    direct_publisher_link = int(not is_google_news_url(story.link))
+    substantial_feed_text = int(has_enough_reported_material(story.title, story.summary_text))
+    source_priority = {
+        "Major News": 4,
+        "GDELT": 3,
+        "Aggregator": 2,
+        "Social": 1,
+        "Custom": 1,
+    }.get(story.group, 0)
+    return direct_publisher_link, source_priority, substantial_feed_text
+
+
 def cluster_is_high_signal(cluster: Sequence[Story], references: int) -> bool:
     freshest_age = min(story_age_hours(story) for story in cluster)
     has_major_report = any(is_major_outlet(story) for story in cluster)
@@ -1652,6 +1669,29 @@ def rank_stories(
                 ),
             ),
         )
+        article_candidates: list[Story] = []
+        seen_candidate_links: set[str] = set()
+        for candidate in sorted(
+            cluster,
+            key=lambda story: (
+                article_candidate_quality(story),
+                story_score(
+                    story,
+                    references=references,
+                    cluster_size=len(cluster),
+                    keywords=keywords,
+                    coverage_span_hours=coverage_span_hours,
+                ),
+            ),
+            reverse=True,
+        ):
+            normalized_link = candidate.link.split("#", 1)[0]
+            if normalized_link in seen_candidate_links:
+                continue
+            seen_candidate_links.add(normalized_link)
+            article_candidates.append(candidate)
+            if len(article_candidates) >= MAX_ARTICLE_CANDIDATES:
+                break
         outlet_names: list[str] = []
         seen_outlets: set[str] = set()
         for clustered_story in sorted(
@@ -1679,6 +1719,7 @@ def rank_stories(
                 coverage_span_hours=coverage_span_hours,
                 signal_label=cluster_signal_label(cluster, references, coverage_span_hours),
                 outlets=tuple(outlet_names),
+                article_candidates=tuple(article_candidates),
             )
         )
 
@@ -1969,10 +2010,59 @@ def extract_json_ld_article_body(page_html: str) -> str:
     return max(bodies, key=len, default="")
 
 
-def extract_main_article_text(page_html: str, article_url: str) -> str:
+def extract_html_paragraph_candidates(page_html: str) -> tuple[tuple[str, int], ...]:
+    try:
+        from lxml import html as lxml_html
+    except ImportError:
+        return ()
+
+    try:
+        document = lxml_html.fromstring(page_html)
+    except (ValueError, TypeError):
+        return ()
+
+    for blocked in document.xpath("//script|//style|//nav|//footer|//aside|//form|//noscript"):
+        blocked.drop_tree()
+
+    candidates: list[tuple[str, int]] = []
+    for xpath, priority in (("//article//p", 4), ("//main//p", 3), ("//p", 1)):
+        paragraphs = []
+        for paragraph in document.xpath(xpath):
+            text = clean_text(" ".join(paragraph.itertext()))
+            if len(text.split()) >= 5:
+                paragraphs.append(text)
+        if paragraphs:
+            candidates.append(("\n".join(paragraphs), priority))
+    return tuple(candidates)
+
+
+def article_extraction_score(
+    text: str,
+    expected_title: str,
+    source_priority: int,
+) -> tuple[int, int, int, int]:
+    word_count = len(text.split())
+    sentences = sentence_count(text)
+    title_terms = set(significant_words(expected_title))
+    body_terms = set(significant_words(text))
+    overlap = len(title_terms.intersection(body_terms))
+    sufficient = int(
+        word_count >= MIN_ARTICLE_WORDS
+        and sentences >= MIN_ARTICLE_SENTENCES
+        and (not title_terms or overlap >= 1)
+    )
+    return sufficient, source_priority, overlap, min(word_count, ARTICLE_MAX_WORDS)
+
+
+def extract_main_article_text(
+    page_html: str,
+    article_url: str,
+    expected_title: str = "",
+) -> str:
     from trafilatura import extract
 
-    extracted = extract(
+    candidates: list[tuple[str, int]] = []
+    precision_text = extract(
         page_html,
         url=article_url,
         output_format="txt",
@@ -1981,13 +2071,44 @@ def extract_main_article_text(page_html: str, article_url: str) -> str:
         favor_precision=True,
         deduplicate=True,
     ) or ""
+    candidates.append((precision_text, 5))
+
     json_ld_body = extract_json_ld_article_body(page_html)
-    if len(json_ld_body.split()) > len(extracted.split()):
-        extracted = json_ld_body
-    return sanitize_article_text(extracted)
+    if json_ld_body:
+        candidates.append((json_ld_body, 5))
+
+    candidates.extend(extract_html_paragraph_candidates(page_html))
+
+    if len(precision_text.split()) < MIN_ARTICLE_WORDS:
+        recall_text = extract(
+            page_html,
+            url=article_url,
+            output_format="txt",
+            include_comments=False,
+            include_tables=False,
+            favor_recall=True,
+            deduplicate=True,
+        ) or ""
+        candidates.append((recall_text, 2))
+
+    sanitized_candidates = [
+        (sanitize_article_text(candidate), priority)
+        for candidate, priority in candidates
+        if candidate
+    ]
+    if not sanitized_candidates:
+        return ""
+    return max(
+        sanitized_candidates,
+        key=lambda candidate: article_extraction_score(
+            candidate[0],
+            expected_title,
+            candidate[1],
+        ),
+    )[0]
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def resolve_article_url(url: str) -> str:
     if not is_google_news_url(url):
         return url
@@ -2004,7 +2125,7 @@ def resolve_article_url(url: str) -> str:
     return ""
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_article_evidence(url: str, expected_title: str) -> ArticleEvidence | None:
     article_url = resolve_article_url(url)
     if not article_url.startswith(("https://", "http://")):
@@ -2014,7 +2135,7 @@ def fetch_article_evidence(url: str, expected_title: str) -> ArticleEvidence | N
     try:
         with urllib.request.urlopen(request, timeout=ARTICLE_TIMEOUT_SECONDS) as response:
             content_type = response.headers.get("Content-Type", "").lower()
-            if "html" not in content_type:
+            if content_type and "html" not in content_type:
                 return None
             charset = response.headers.get_content_charset() or "utf-8"
             page_bytes = response.read(ARTICLE_MAX_BYTES)
@@ -2022,10 +2143,13 @@ def fetch_article_evidence(url: str, expected_title: str) -> ArticleEvidence | N
     except (urllib.error.URLError, TimeoutError, ValueError, OSError):
         return None
 
-    page_html = page_bytes.decode(charset, errors="ignore")
     try:
-        article_text = extract_main_article_text(page_html, final_url)
-    except (ImportError, ValueError, TypeError):
+        page_html = page_bytes.decode(charset, errors="ignore")
+    except LookupError:
+        page_html = page_bytes.decode("utf-8", errors="ignore")
+    try:
+        article_text = extract_main_article_text(page_html, final_url, expected_title)
+    except (ImportError, ValueError, TypeError, RuntimeError):
         return None
 
     evidence = ArticleEvidence(
@@ -2045,7 +2169,7 @@ def article_evidence_is_sufficient(evidence: ArticleEvidence | None) -> bool:
 
     title_terms = set(significant_words(evidence.title))
     body_terms = set(significant_words(evidence.text))
-    required_overlap = min(2, len(title_terms))
+    required_overlap = min(1, len(title_terms))
     return required_overlap == 0 or len(title_terms.intersection(body_terms)) >= required_overlap
 
 
@@ -2976,6 +3100,7 @@ def render_story_header(
 def render_story_details(prepared_story: PreparedStory) -> None:
     ranked_story = prepared_story.ranked_story
     story = ranked_story.story
+    article_story = prepared_story.article_story or story
     evidence = prepared_story.evidence
     summary = dict(prepared_story.card)
     archived = story.id in st.session_state.archived
@@ -3023,7 +3148,7 @@ def render_story_details(prepared_story: PreparedStory) -> None:
             deep_rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
         st.markdown(f'<div class="summary-grid">{deep_rows}</div>', unsafe_allow_html=True)
 
-    source = f"Source: {story.source}"
+    source = f"Source: {article_story.source}"
     st.markdown(f'<div class="story-source">{html.escape(source)}</div>', unsafe_allow_html=True)
 
 
@@ -3075,7 +3200,10 @@ def render_headline_story(ranked_story: RankedStory, detail: int) -> None:
         elif st.session_state.generation_issues:
             st.error("Skim could not generate this brief. Open Feed notes below for the exact reason.")
         else:
-            st.warning("This publisher page did not provide enough usable article text for a grounded brief.")
+            st.warning(
+                "Skim could not access enough reporting from the available publisher pages "
+                "to build a grounded brief."
+            )
 
 
 def render_header() -> None:
@@ -3268,13 +3396,24 @@ def prepare_ranked_story(
     detail: int,
     refresh_key: str,
 ) -> tuple[PreparedStory | None, float]:
-    evidence = fetch_article_evidence(item.story.link, item.story.title)
-    if not evidence:
-        return None, 0.0
-    attempt = smart_summarize(item.story, evidence, detail, refresh_key)
-    if not attempt.card:
-        return None, attempt.ai_cost
-    return PreparedStory(ranked_story=item, evidence=evidence, card=attempt.card), attempt.ai_cost
+    candidates = item.article_candidates or (item.story,)
+    for candidate in candidates[:MAX_ARTICLE_CANDIDATES]:
+        evidence = fetch_article_evidence(candidate.link, candidate.title)
+        if not evidence:
+            continue
+        attempt = smart_summarize(item.story, evidence, detail, refresh_key)
+        if not attempt.card:
+            return None, attempt.ai_cost
+        return (
+            PreparedStory(
+                ranked_story=item,
+                evidence=evidence,
+                card=attempt.card,
+                article_story=candidate,
+            ),
+            attempt.ai_cost,
+        )
+    return None, 0.0
 
 
 def append_prepared_story(

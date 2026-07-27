@@ -98,6 +98,96 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertTrue(app.article_evidence_is_sufficient(relevant))
         self.assertFalse(app.article_evidence_is_sufficient(unrelated))
 
+    def test_article_extraction_falls_back_to_article_paragraphs(self) -> None:
+        paragraphs = "".join(
+            f"<p>Ladera Ranch cancer investigators reviewed diagnosis {index} and reported "
+            "new evidence to county health officials.</p>"
+            for index in range(16)
+        )
+        page_html = f"<html><body><nav>Subscribe now</nav><article>{paragraphs}</article></body></html>"
+
+        with patch("trafilatura.extract", return_value=""):
+            extracted = app.extract_main_article_text(
+                page_html,
+                self.story.link,
+                self.story.title,
+            )
+
+        self.assertGreaterEqual(len(extracted.split()), app.MIN_ARTICLE_WORDS)
+        self.assertIn("county health officials", extracted)
+        self.assertNotIn("Subscribe now", extracted)
+
+    def test_ranked_cluster_keeps_direct_articles_as_briefing_candidates(self) -> None:
+        google_story = replace(
+            self.news_story(
+                "google",
+                "Coalition government collapses after confidence vote",
+                "Google News",
+                group="Aggregator",
+            ),
+            link="https://news.google.com/rss/articles/example",
+        )
+        direct_story = self.news_story(
+            "direct",
+            "Government coalition collapses following confidence vote",
+            "BBC News",
+        )
+
+        ranked = app.rank_stories([google_story, direct_story], require_high_signal=False)
+
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0].article_candidates[0].id, "direct")
+        self.assertEqual(
+            {candidate.id for candidate in ranked[0].article_candidates},
+            {"google", "direct"},
+        )
+
+    def test_briefing_falls_through_to_another_article_in_the_cluster(self) -> None:
+        blocked_story = self.news_story(
+            "blocked",
+            "Coalition government collapses after confidence vote",
+            "Blocked Publisher",
+        )
+        readable_story = self.news_story(
+            "readable",
+            "Government coalition collapses following confidence vote",
+            "BBC News",
+        )
+        ranked = app.RankedStory(
+            story=blocked_story,
+            cluster_key="coalition-collapse",
+            references=2,
+            topic_story_count=2,
+            score=1.0,
+            article_candidates=(blocked_story, readable_story),
+        )
+        evidence_text = " ".join(
+            "The coalition government lost a confidence vote and ministers confirmed the transition."
+            for _ in range(18)
+        )
+        evidence = app.ArticleEvidence(
+            url=readable_story.link,
+            title=readable_story.title,
+            text=evidence_text,
+            word_count=len(evidence_text.split()),
+        )
+
+        with (
+            patch.object(app, "fetch_article_evidence", side_effect=[None, evidence]) as fetch,
+            patch.object(
+                app,
+                "smart_summarize",
+                return_value=app.SummaryAttempt(card=self.good_card(), ai_cost=0.02),
+            ),
+        ):
+            prepared, cost = app.prepare_ranked_story(ranked, detail=3, refresh_key="test")
+
+        self.assertIsNotNone(prepared)
+        self.assertEqual(prepared.evidence.url, readable_story.link)
+        self.assertEqual(prepared.article_story, readable_story)
+        self.assertEqual(cost, 0.02)
+        self.assertEqual(fetch.call_count, 2)
+
     def test_card_validator_rejects_screenshot_failure_mode(self) -> None:
         bad_card = {
             "headline": "Southern California suburb alarmed as rare cancer sickens children",
