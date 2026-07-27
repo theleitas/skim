@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -367,6 +368,25 @@ class ArticlePipelineTests(unittest.TestCase):
             app.coverage_outlet_text(ranked),
             "BBC News, Reuters, The Guardian · 2 more outlets",
         )
+
+    def test_category_prefers_headline_signals_over_incidental_summary_words(self) -> None:
+        economy_story = self.news_story(
+            "economy-headline",
+            "Oil price slides as AstraZeneca beats profit forecasts",
+            "The Guardian World",
+        )
+        economy_story = replace(
+            economy_story,
+            summary_text="The live page also links to film, music, and television coverage.",
+        )
+        conflict_story = self.news_story(
+            "conflict-headline",
+            "Israeli forces enter West Bank towns as settler violence worsens",
+            "Al Jazeera",
+        )
+
+        self.assertEqual(app.story_category(economy_story), "Economy")
+        self.assertEqual(app.story_category(conflict_story), "Conflict")
 
 
 if __name__ == "__main__":

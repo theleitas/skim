@@ -279,9 +279,9 @@ CATEGORY_COLORS = {
 
 CATEGORY_TERMS = {
     "Conflict": (
-        "airstrike", "armed conflict", "attack", "bombing", "ceasefire", "drone strike",
-        "hostage", "invasion", "military", "missile", "rocket fire", "troops", "truce",
-        "war", "warfare", "weapons",
+        "airstrike", "armed conflict", "armed forces", "attack", "bombing", "ceasefire", "drone",
+        "drone strike", "drones", "hostage", "invasion", "military", "missile", "rocket fire",
+        "settler violence", "shooting", "troops", "truce", "war", "warfare", "weapons",
     ),
     "US Politics": (
         "biden", "capitol hill", "congress", "democratic party", "department of justice",
@@ -305,7 +305,7 @@ CATEGORY_TERMS = {
     "Economy": (
         "acquisition", "bankruptcy", "central bank", "currency", "earnings", "economy",
         "federal reserve", "gdp", "inflation", "interest rates", "ipo", "merger",
-        "oil prices", "profit", "recession", "revenue", "shares", "stock market", "stocks",
+        "oil price", "oil prices", "profit", "recession", "revenue", "shares", "stock market", "stocks",
         "tariff", "trade deal", "unemployment",
     ),
 }
@@ -332,18 +332,20 @@ def category_term_score(text: str, term: str) -> int:
 
 
 def story_category(story: Story) -> str:
-    text = clean_text(f"{story.title} {story.summary_text}").lower()
+    headline = clean_text(story.title).lower()
+    summary = clean_text(story.summary_text).lower()
     source = story.source.lower()
-    scores = {
-        category: sum(category_term_score(text, term) for term in terms)
-        for category, terms in CATEGORY_TERMS.items()
-    }
+    scores = {}
+    for category, terms in CATEGORY_TERMS.items():
+        headline_score = sum(category_term_score(headline, term) for term in terms)
+        summary_score = sum(category_term_score(summary, term) for term in terms)
+        scores[category] = (headline_score * 3) + summary_score
     for category, source_hints in CATEGORY_SOURCE_HINTS.items():
         if any(hint in source for hint in source_hints):
-            scores[category] += 2
+            scores[category] += 3
 
     best_score = max(scores.values(), default=0)
-    if best_score == 0:
+    if best_score < 2:
         return "World"
     return next(category for category in CATEGORY_TIEBREAK_ORDER if scores[category] == best_score)
 
@@ -459,94 +461,116 @@ def page_style() -> None:
                 margin-top: 0.12rem;
             }
 
-            [data-testid="stVerticalBlockBorderWrapper"] {
-                background:
-                    linear-gradient(145deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)),
-                    var(--skim-card);
-                border: 1px solid #4a443c;
-                border-left: 4px solid var(--skim-accent);
-                border-radius: 8px;
-                box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"] {
+                background: transparent;
+                border: 0;
+                border-radius: 0;
+                box-shadow: none;
+                padding: 0;
+            }
+
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"] > div[data-testid="stVerticalBlock"] {
+                position: relative;
+                background: #050607;
+                border: 1px solid #343a42;
+                border-radius: 5px;
+                box-shadow: none;
+                padding: 0.72rem 0.78rem 0.72rem 1.2rem;
+            }
+
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.category-marker)
+            > div[data-testid="stVerticalBlock"]::before {
+                content: "";
+                position: absolute;
+                left: 0.48rem;
+                top: 0.52rem;
+                bottom: 0.52rem;
+                width: 3px;
+                border-radius: 2px;
+                background: var(--skim-category, var(--skim-accent));
+                box-shadow: 0 0 8px color-mix(in srgb, var(--skim-category, var(--skim-accent)) 55%, transparent);
             }
 
             .category-marker {
                 display: none;
             }
 
-            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-world) {
-                border-left-color: #39ff14;
-                border-left-width: 4px;
-                box-shadow: -3px 0 12px rgba(57, 255, 20, 0.35);
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.category-world) {
+                --skim-category: #39ff14;
             }
 
-            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-conflict) {
-                border-left-color: #ff4f81;
-                border-left-width: 4px;
-                box-shadow: -3px 0 12px rgba(255, 79, 129, 0.35);
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.category-conflict) {
+                --skim-category: #ff4f81;
             }
 
-            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-us-politics) {
-                border-left-color: #00e5ff;
-                border-left-width: 4px;
-                box-shadow: -3px 0 12px rgba(0, 229, 255, 0.35);
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.category-us-politics) {
+                --skim-category: #00e5ff;
             }
 
-            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-sports) {
-                border-left-color: #ccff00;
-                border-left-width: 4px;
-                box-shadow: -3px 0 12px rgba(204, 255, 0, 0.35);
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.category-sports) {
+                --skim-category: #ccff00;
             }
 
-            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-entertainment) {
-                border-left-color: #ff7a00;
-                border-left-width: 4px;
-                box-shadow: -3px 0 12px rgba(255, 122, 0, 0.35);
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.category-entertainment) {
+                --skim-category: #ff7a00;
             }
 
-            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-technology) {
-                border-left-color: #bb86fc;
-                border-left-width: 4px;
-                box-shadow: -3px 0 12px rgba(187, 134, 252, 0.35);
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.category-technology) {
+                --skim-category: #bb86fc;
             }
 
-            [data-testid="stVerticalBlockBorderWrapper"]:has(.category-economy) {
-                border-left-color: #ffe600;
-                border-left-width: 4px;
-                box-shadow: -3px 0 12px rgba(255, 230, 0, 0.35);
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.category-economy) {
+                --skim-category: #ffe600;
             }
 
-            [data-testid="stVerticalBlockBorderWrapper"]:has(.compact-headline-marker) {
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) {
                 background: transparent;
-                border-width: 0 0 1px 4px;
-                border-radius: 0;
-                box-shadow: none;
-                padding: 0.55rem 0.85rem 0.6rem;
             }
 
-            [data-testid="stVerticalBlockBorderWrapper"]:has(.compact-headline-marker) button {
-                min-height: 0;
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker)
+            > div[data-testid="stVerticalBlock"] {
+                gap: 0.2rem;
+                padding: 0.46rem 0.55rem 0.64rem 1.05rem;
+            }
+
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button {
+                justify-content: flex-start;
+                min-height: 2.05rem;
+                height: auto;
                 margin: 0;
-                padding: 0;
-                background: transparent;
-                border: 0;
+                padding: 0.3rem 0.55rem;
+                background: #000000;
+                border: 1px solid #5b6169;
+                border-radius: 4px;
                 box-shadow: none;
-                color: var(--skim-ink);
-                font-size: 0.98rem;
-                font-weight: 700;
-                line-height: 1.2;
+                color: #d8d8d8;
+                font-size: 1.08rem;
+                font-weight: 550;
+                line-height: 1.22;
                 text-align: left;
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
 
-            [data-testid="stVerticalBlockBorderWrapper"]:has(.compact-headline-marker) button:hover,
-            [data-testid="stVerticalBlockBorderWrapper"]:has(.compact-headline-marker) button:focus,
-            [data-testid="stVerticalBlockBorderWrapper"]:has(.compact-headline-marker) button:active {
-                background: transparent;
-                border: 0;
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button p {
+                width: 100%;
+                margin: 0;
+                color: inherit;
+                font: inherit;
+                text-align: left;
+                white-space: inherit;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button:hover,
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button:focus,
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button:active {
+                background: #090a0c;
+                border-color: #8a9098;
                 box-shadow: none;
-                color: var(--skim-ink);
+                color: #e3e3e3;
             }
 
             .headline-category {
@@ -573,7 +597,7 @@ def page_style() -> None:
                 font-size: 0.68rem;
                 font-weight: 700;
                 line-height: 1.1;
-                margin-bottom: 0.35rem;
+                margin-bottom: 0.08rem;
                 text-transform: uppercase;
             }
 
@@ -587,11 +611,31 @@ def page_style() -> None:
                 text-transform: none;
             }
 
-            .compact-headline-coverage {
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker)
+            [data-testid="stCaptionContainer"] {
                 color: #8390a1;
-                font-size: 0.74rem;
+                font-size: 0.7rem;
                 line-height: 1.15;
-                margin-top: 0.3rem;
+                margin-top: 0.06rem;
+                padding-bottom: 0.04rem;
+            }
+
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker)
+            [data-testid="stElementContainer"]:has([data-testid="stCaptionContainer"]) {
+                height: auto !important;
+                min-height: 0.95rem;
+            }
+
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker)
+            [data-testid="stCaptionContainer"] p {
+                color: inherit;
+                font-size: inherit;
+                line-height: inherit;
+                margin: 0;
+            }
+
+            .st-key-headline_feed {
+                gap: 0.42rem;
             }
 
             .story-meta {
@@ -808,13 +852,25 @@ def page_style() -> None:
                     line-height: 1.28;
                 }
 
-                [data-testid="stVerticalBlockBorderWrapper"]:has(.compact-headline-marker) button {
-                    font-size: 0.88rem;
+                .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button {
+                    font-size: 0.98rem;
                     white-space: normal;
                     display: -webkit-box;
                     -webkit-box-orient: vertical;
                     -webkit-line-clamp: 2;
                     overflow: hidden;
+                }
+
+                .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker) button p {
+                    white-space: normal;
+                    display: -webkit-box;
+                    -webkit-box-orient: vertical;
+                    -webkit-line-clamp: 2;
+                }
+
+                .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-marker)
+                [data-testid="stElementContainer"]:has([data-testid="stCaptionContainer"]) {
+                    min-height: 1.7rem;
                 }
             }
         </style>
@@ -2821,13 +2877,10 @@ def render_story_header(
     story = ranked_story.story
     category = story_category(story)
     category_class = category_css_class(category)
-    outlet_word = "outlet" if ranked_story.references == 1 else "outlets"
     report_word = "report" if ranked_story.topic_story_count == 1 else "reports"
     if compact:
         signal = html.escape(ranked_story.signal_label or "Top story")
-        age = html.escape(story_age(story))
         category_label = html.escape(category)
-        outlets = html.escape(coverage_outlet_text(ranked_story))
         st.markdown(
             f'<span class="category-marker compact-headline-marker {category_class}"></span>'
             '<div class="compact-headline-kicker">'
@@ -2841,17 +2894,17 @@ def render_story_header(
             key=headline_button_key,
             use_container_width=True,
         )
-        st.markdown(
-            f'<div class="compact-headline-coverage">{outlets} · '
-            f'{ranked_story.topic_story_count} {report_word} in this cluster · {age}</div>',
-            unsafe_allow_html=True,
+        st.caption(
+            f"{coverage_outlet_text(ranked_story)} · "
+            f"{ranked_story.topic_story_count} {report_word} in this cluster · {story_age(story)}"
         )
         return pressed
 
     meta = (
         f'<span class="headline-category {category_class}">{html.escape(category)}</span> / '
-        f"{html.escape(story_age(story))} / {ranked_story.references} {outlet_word} / "
-        f"{ranked_story.topic_story_count} {report_word} in this cluster"
+        f"{html.escape(coverage_outlet_text(ranked_story))} / "
+        f"{ranked_story.topic_story_count} {report_word} in this cluster / "
+        f"{html.escape(story_age(story))}"
     )
     st.markdown(
         f'<span class="category-marker {category_class}"></span><div class="story-meta">{meta}</div>',
@@ -3312,17 +3365,8 @@ def main() -> None:
 
     render_header()
 
-    if st.button(
-        "Refresh latest stories",
-        icon=":material/sync:",
-        help="Repoll every live source and build a new briefing without repeating the last 24 hours.",
-        use_container_width=True,
-    ):
-        complete_story_refresh()
-        st.rerun()
-
     batch_timestamp_slot = st.empty()
-    story_stream = st.container()
+    story_stream = st.container(key="headline_feed")
 
     selected_topics = st.session_state.selected_topics
     detail = st.session_state.detail
@@ -3428,6 +3472,15 @@ def main() -> None:
             "The main briefing now favors independent outlet confirmation, fast coverage growth, "
             "and fresh consequential reporting from major newsrooms."
         )
+
+    if st.button(
+        "Refresh latest stories",
+        icon=":material/sync:",
+        help="Repoll every live source and build a new briefing without repeating the last 24 hours.",
+        use_container_width=True,
+    ):
+        complete_story_refresh()
+        st.rerun()
 
     st.markdown(
         """
