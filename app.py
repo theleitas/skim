@@ -2336,6 +2336,34 @@ def normalize_ai_card(raw_result: object) -> dict[str, str]:
     }
 
 
+def ai_failure_message(provider: str, model: str, exc: Exception) -> str:
+    raw_message = clean_text(str(exc))
+    safe_message = re.sub(r"sk-[A-Za-z0-9_-]+", "[redacted]", raw_message)
+    normalized = safe_message.lower()
+    provider_name = "OpenAI" if provider == "openai" else provider.title()
+
+    if any(term in normalized for term in ("incorrect api key", "invalid api key", "authentication")):
+        return f"{provider_name} rejected the configured API key. Check the app's Secrets entry."
+    if any(term in normalized for term in ("insufficient_quota", "insufficient quota", "billing", "credit")):
+        return f"{provider_name} cannot generate summaries because the API account has no available credit."
+    if "rate limit" in normalized or "rate_limit" in normalized:
+        return f"{provider_name} is temporarily rate-limiting summary requests. Try again shortly."
+    if "model" in normalized and any(term in normalized for term in ("not found", "does not exist", "not available")):
+        return f"{provider_name} cannot use the configured model ({model}). Check the model setting in Secrets."
+    detail = safe_message[:220] or exc.__class__.__name__
+    return f"{provider_name} could not generate a summary ({detail})."
+
+
+def record_generation_issue(message: str) -> None:
+    try:
+        issues = list(st.session_state.get("generation_issues", []))
+        if message not in issues:
+            issues.append(message)
+        st.session_state.generation_issues = issues[-4:]
+    except Exception:
+        return
+
+
 def smart_summarize(
     story: Story,
     evidence: ArticleEvidence,
@@ -2368,7 +2396,8 @@ def smart_summarize(
             topics,
             detail,
         )
-    except Exception:
+    except Exception as exc:
+        record_generation_issue(ai_failure_message(provider, model, exc))
         return SummaryAttempt(card=None, ai_cost=0.0)
 
     ai_cost = 0.0
@@ -2399,7 +2428,8 @@ def smart_summarize(
                 json.dumps(card, ensure_ascii=True, sort_keys=True),
                 errors,
             )
-        except Exception:
+        except Exception as exc:
+            record_generation_issue(ai_failure_message(provider, model, exc))
             return SummaryAttempt(card=None, ai_cost=ai_cost)
         if provider == "openai":
             repair_cost = result_openai_cost(repaired, model)
@@ -2888,6 +2918,8 @@ def main() -> None:
         st.session_state.last_settings = None
     if "deep_analyses" not in st.session_state:
         st.session_state.deep_analyses = {}
+    if "generation_issues" not in st.session_state:
+        st.session_state.generation_issues = []
     if "shown_cluster_history" not in st.session_state:
         legacy_seen = st.session_state.get("seen_cluster_keys", set())
         now = utc_now().isoformat()
@@ -2903,7 +2935,7 @@ def main() -> None:
     st.session_state.setdefault("detail", 3)
     st.session_state.setdefault("include_social", False)
     st.session_state.setdefault("include_aggregators", True)
-    st.session_state.setdefault("include_gdelt", True)
+    st.session_state.setdefault("include_gdelt", False)
     st.session_state.setdefault("show_archived", False)
     initialize_keyword_state()
     initialize_ai_cost_state()
@@ -2968,6 +3000,7 @@ def main() -> None:
         '<div class="build-progress">Reading the strongest candidates...</div>',
         unsafe_allow_html=True,
     )
+    st.session_state.generation_issues = []
     batch = build_publishable_batch(
         ranked_stories,
         keyword_rankings,
@@ -2980,9 +3013,15 @@ def main() -> None:
     with batch_timestamp_slot.container():
         render_batch_timestamp(len(batch))
 
+    errors.extend(st.session_state.generation_issues)
     if not batch:
         if not configured_ai_provider():
             st.info("Add OPENAI_API_KEY and set SKIM_AI_PROVIDER to openai in Streamlit secrets.")
+        elif st.session_state.generation_issues:
+            st.error(
+                "Skim found live news candidates, but its AI summaries could not be generated. "
+                "Open Feed notes below for the exact reason."
+            )
         else:
             st.info(
                 "No new stories passed the full-article and AI quality checks for this setup. "
@@ -3020,7 +3059,11 @@ def main() -> None:
         with col2:
             st.toggle("Reddit and Hacker News", key="include_social")
             st.toggle("Google News aggregators", key="include_aggregators")
-            st.toggle("GDELT global discovery", key="include_gdelt")
+            st.toggle(
+                "GDELT global discovery",
+                key="include_gdelt",
+                help="Optional free global discovery. It can be slower when the public API is busy.",
+            )
             st.toggle("Show archived stories", key="show_archived")
             if st.button("Clear 24-hour history", use_container_width=True):
                 st.session_state.shown_cluster_history = {}

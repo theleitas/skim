@@ -318,6 +318,25 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertEqual(deduplicated, [first])
 
+    def test_ai_failure_message_explains_auth_and_redacts_keys(self) -> None:
+        message = app.ai_failure_message(
+            "openai",
+            "gpt-5.6-terra",
+            RuntimeError("Incorrect API key provided: sk-secret-value"),
+        )
+
+        self.assertIn("rejected the configured API key", message)
+        self.assertNotIn("sk-secret-value", message)
+
+    def test_ai_failure_message_explains_api_credit_problem(self) -> None:
+        message = app.ai_failure_message(
+            "openai",
+            "gpt-5.6-terra",
+            RuntimeError("insufficient_quota"),
+        )
+
+        self.assertIn("no available credit", message)
+
 
 if __name__ == "__main__":
     unittest.main()

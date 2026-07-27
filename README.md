@@ -90,7 +90,8 @@ Google News and GDELT are used as discovery layers, while direct publisher pages
 evidence source for each AI summary. GDELT is an
 [open platform available without a fee](https://www.gdeltproject.org/about.html), and its
 public API does not require a key. Skim caches GDELT requests for 10 minutes to respect its
-public rate limit and includes the required GDELT attribution.
+public rate limit and includes the required GDELT attribution. It is off by default in
+Customize so a busy public API never delays the core briefing.
 
 The main ranking favors independent-outlet confirmation, coverage velocity, freshness,
 major-newsroom authority, and concrete breaking-news signals.
