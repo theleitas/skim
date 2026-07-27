@@ -604,6 +604,18 @@ def page_style() -> None:
             .headline-category.category-technology { color: #bb86fc; }
             .headline-category.category-economy { color: #ffe600; }
 
+            .category-time {
+                font-weight: 700;
+            }
+
+            .category-time.category-world { color: #39ff14; }
+            .category-time.category-conflict { color: #ff4f81; }
+            .category-time.category-us-politics { color: #00e5ff; }
+            .category-time.category-sports { color: #ccff00; }
+            .category-time.category-entertainment { color: #ff7a00; }
+            .category-time.category-technology { color: #bb86fc; }
+            .category-time.category-economy { color: #ffe600; }
+
             .compact-headline-kicker {
                 display: flex;
                 align-items: center;
@@ -2913,8 +2925,10 @@ def render_story_header(
             use_container_width=True,
         )
         st.caption(
-            f"{coverage_outlet_text(ranked_story)} · "
-            f"{ranked_story.topic_story_count} {report_word} in this cluster · {story_age(story)}"
+            f"{html.escape(coverage_outlet_text(ranked_story))} · "
+            f"{ranked_story.topic_story_count} {report_word} in this cluster · "
+            f'<span class="category-time {category_class}">{html.escape(story_age(story))}</span>',
+            unsafe_allow_html=True,
         )
         return pressed
 
@@ -2922,7 +2936,7 @@ def render_story_header(
         f'<span class="headline-category {category_class}">{html.escape(category)}</span> / '
         f"{html.escape(coverage_outlet_text(ranked_story))} / "
         f"{ranked_story.topic_story_count} {report_word} in this cluster / "
-        f"{html.escape(story_age(story))}"
+        f'<span class="category-time {category_class}">{html.escape(story_age(story))}</span>'
     )
     st.markdown(
         f'<div class="story-meta">{meta}</div>',
