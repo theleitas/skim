@@ -3751,6 +3751,15 @@ def main() -> None:
     with story_stream:
         for ranked_story in batch:
             render_headline_story(ranked_story, detail)
+        if batch and st.button(
+            "Load 20 more",
+            key="load-more-headlines",
+            icon=":material/add:",
+            help="Show the next unseen 20 headlines from the current discovery pool.",
+            use_container_width=True,
+        ):
+            load_next_story_batch()
+            st.rerun()
 
     with batch_timestamp_slot.container():
         render_batch_timestamp(len(batch))
@@ -3763,17 +3772,9 @@ def main() -> None:
         )
     st.divider()
 
-    col1, col2, col3 = st.columns([1, 1, 1])
+    col1, col2 = st.columns(2)
     col1.metric("Headlines", len(batch))
     col2.metric("Archived", len(st.session_state.archived))
-    if col3.button(
-        "Load 20 more",
-        icon=":material/add:",
-        help="Show the next unseen 20 headlines from the current discovery pool.",
-        use_container_width=True,
-    ):
-        load_next_story_batch()
-        st.rerun()
 
     if errors:
         with st.expander("Feed notes", expanded=False):
