@@ -388,6 +388,135 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertEqual(stories[0].published, datetime(2026, 7, 24, 19, 30, tzinfo=timezone.utc))
         self.assertIn("Business", stories[0].topics)
 
+    def test_expanded_free_source_catalog_includes_global_and_specialist_feeds(self) -> None:
+        sources = {source.name: source for source in app.NEWS_SOURCES}
+
+        self.assertTrue(
+            {
+                "Drudge Report",
+                "PBS News",
+                "Sky News",
+                "Deutsche Welle",
+                "France 24",
+                "Euronews",
+                "CBC News",
+                "ABC Australia",
+                "RNZ",
+                "ProPublica",
+                "Politico",
+                "TechCrunch",
+                "The Verge",
+                "ESPN",
+                "MarketWatch",
+                "Variety",
+                "NASA",
+            }.issubset(sources)
+        )
+        self.assertEqual(sources["Drudge Report"].group, "Aggregator")
+        self.assertEqual(sources["ESPN"].topics, ("Sports",))
+
+    def test_drudge_feed_uses_direct_publisher_link_without_inflating_outlets(self) -> None:
+        source = app.NewsSource(
+            "Drudge Report",
+            "https://feedpress.me/drudgereportfeed",
+            "Aggregator",
+            ("World", "US"),
+            item_limit=5,
+        )
+        feed = b"""
+        <rss><channel>
+          <item>
+            <title>Major policy reversal rocks Washington</title>
+            <link>https://feedpress.me/link/20202/example</link>
+            <description><![CDATA[<img src="https://example.com/photo.jpg">]]></description>
+            <guid>https://www.washingtonpost.com/politics/2026/07/27/policy-reversal/</guid>
+            <pubDate>Mon, 27 Jul 2026 20:00:00 GMT</pubDate>
+          </item>
+          <item>
+            <title>Paywall mirror should not enter Skim</title>
+            <link>https://feedpress.me/link/20202/archive</link>
+            <guid>https://archive.ph/example</guid>
+            <pubDate>Mon, 27 Jul 2026 20:00:00 GMT</pubDate>
+          </item>
+        </channel></rss>
+        """
+
+        stories, error = app.parse_source_feed(source, feed)
+
+        self.assertIsNone(error)
+        self.assertEqual(len(stories), 1)
+        self.assertEqual(
+            stories[0].link,
+            "https://www.washingtonpost.com/politics/2026/07/27/policy-reversal/",
+        )
+        self.assertEqual(stories[0].source, "Washington Post via Drudge")
+        self.assertEqual(stories[0].summary_text, "")
+        self.assertEqual(stories[0].image_url, "https://example.com/photo.jpg")
+        self.assertEqual(
+            app.outlet_identity(stories[0].source),
+            app.outlet_identity("Washington Post"),
+        )
+
+    def test_single_aggregator_pick_ranks_below_direct_reporting(self) -> None:
+        direct = self.news_story(
+            "direct-report",
+            "Government announces emergency policy reversal",
+            "Washington Post",
+        )
+        aggregator = replace(
+            direct,
+            id="aggregator-report",
+            source="Washington Post via Drudge",
+            group="Aggregator",
+        )
+
+        direct_score = app.story_score(direct, references=1, cluster_size=1)
+        aggregator_score = app.story_score(aggregator, references=1, cluster_size=1)
+
+        self.assertAlmostEqual(direct_score - aggregator_score, 14.0, places=5)
+
+    def test_parallel_feed_batch_preserves_source_filters_and_keywords(self) -> None:
+        major = app.NewsSource("Major", "https://example.com/major", "Major News", ("World",))
+        aggregator = app.NewsSource(
+            "Aggregator",
+            "https://example.com/aggregator",
+            "Aggregator",
+            ("World",),
+        )
+        social = app.NewsSource("Social", "https://example.com/social", "Social", ("World",))
+
+        def fake_fetch(source: app.NewsSource) -> tuple[list[app.Story], None]:
+            story = app.Story(
+                id=source.name,
+                source=source.name,
+                group=source.group,
+                title=f"{source.name} reports a major international development",
+                link=source.url,
+                summary_text="",
+                published=datetime.now(timezone.utc),
+                topics=source.topics,
+            )
+            return [story], None
+
+        with (
+            patch.object(app, "NEWS_SOURCES", (major, aggregator, social)),
+            patch.object(app, "fetch_source", side_effect=fake_fetch) as fetch,
+        ):
+            stories, errors = app.fetch_stories(
+                ("World",),
+                include_aggregators=False,
+                include_social=False,
+                custom_keywords=("semiconductors",),
+                include_gdelt=False,
+            )
+
+        self.assertEqual(errors, [])
+        self.assertEqual({story.source for story in stories}, {"Major", "Keyword: semiconductors"})
+        self.assertEqual(
+            {call.args[0].name for call in fetch.call_args_list},
+            {"Major", "Keyword: semiconductors"},
+        )
+
     def test_story_deduplication_ignores_tracking_queries(self) -> None:
         first = self.news_story(
             "first",

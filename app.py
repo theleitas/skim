@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -21,6 +22,7 @@ import streamlit as st
 APP_NAME = "Skim"
 BATCH_SIZE = 20
 ITEMS_PER_SOURCE = 50
+MAX_FEED_WORKERS = 8
 FEED_TIMEOUT_SECONDS = 15
 ARTICLE_TIMEOUT_SECONDS = 15
 ARTICLE_MAX_BYTES = 3_000_000
@@ -83,6 +85,7 @@ class NewsSource:
     url: str
     group: str
     topics: tuple[str, ...]
+    item_limit: int = ITEMS_PER_SOURCE
 
 
 @dataclass(frozen=True)
@@ -164,21 +167,124 @@ NEWS_SOURCES = (
     NewsSource("BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml", "Major News", ("World",)),
     NewsSource("BBC Top Stories", "https://feeds.bbci.co.uk/news/rss.xml", "Major News", ("World", "US")),
     NewsSource("NPR News", "https://feeds.npr.org/1001/rss.xml", "Major News", ("US", "Politics", "Culture")),
+    NewsSource(
+        "PBS News",
+        "https://www.pbs.org/newshour/feeds/rss/headlines",
+        "Major News",
+        ("World", "US", "Politics", "Health", "Science", "Climate", "Culture"),
+    ),
     NewsSource("The Guardian World", "https://www.theguardian.com/world/rss", "Major News", ("World", "Politics")),
     NewsSource("The Guardian US", "https://www.theguardian.com/us-news/rss", "Major News", ("US", "Politics")),
     NewsSource("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml", "Major News", ("World",)),
+    NewsSource(
+        "Sky News",
+        "https://feeds.skynews.com/feeds/rss/home.xml",
+        "Major News",
+        ("World", "US", "Politics", "Business", "Tech", "Culture"),
+    ),
+    NewsSource(
+        "Deutsche Welle",
+        "https://rss.dw.com/rdf/rss-en-all",
+        "Major News",
+        ("World", "Politics", "Business", "Climate"),
+    ),
+    NewsSource(
+        "France 24",
+        "https://www.france24.com/en/rss",
+        "Major News",
+        ("World", "Politics", "Business"),
+    ),
+    NewsSource(
+        "Euronews",
+        "https://www.euronews.com/rss?level=theme&name=news",
+        "Major News",
+        ("World", "Politics", "Business", "Climate"),
+    ),
+    NewsSource(
+        "CBC News",
+        "https://www.cbc.ca/cmlink/rss-topstories",
+        "Major News",
+        ("World", "US", "Politics", "Business", "Health", "Climate", "Culture"),
+    ),
+    NewsSource(
+        "ABC Australia",
+        "https://www.abc.net.au/news/feed/51120/rss.xml",
+        "Major News",
+        ("World", "Politics", "Business", "Climate", "Health", "Science", "Culture"),
+    ),
+    NewsSource(
+        "RNZ",
+        "https://www.rnz.co.nz/rss/news.xml",
+        "Major News",
+        ("World", "Politics", "Business", "Climate", "Health", "Culture"),
+    ),
     NewsSource("NYT Top Stories", "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml", "Major News", ("World", "US")),
     NewsSource("NYT World", "https://rss.nytimes.com/services/xml/rss/nyt/World.xml", "Major News", ("World",)),
     NewsSource("NYT Technology", "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml", "Major News", ("Tech", "AI")),
     NewsSource("CNN Top Stories", "http://rss.cnn.com/rss/cnn_topstories.rss", "Major News", ("World", "US")),
     NewsSource("ABC News", "https://abcnews.go.com/abcnews/topstories", "Major News", ("US", "World")),
     NewsSource("CBS News", "https://www.cbsnews.com/latest/rss/main", "Major News", ("US", "World")),
+    NewsSource(
+        "ProPublica",
+        "https://www.propublica.org/feeds/propublica/main",
+        "Specialist",
+        ("US", "Politics", "Business", "Health", "Climate"),
+    ),
+    NewsSource(
+        "Politico",
+        "https://rss.politico.com/politics-news.xml",
+        "Specialist",
+        ("US", "Politics"),
+    ),
+    NewsSource(
+        "TechCrunch",
+        "https://techcrunch.com/feed/",
+        "Specialist",
+        ("Tech", "AI", "Business"),
+    ),
+    NewsSource(
+        "The Verge",
+        "https://www.theverge.com/rss/index.xml",
+        "Specialist",
+        ("Tech", "AI", "Science", "Culture"),
+    ),
+    NewsSource(
+        "ESPN",
+        "https://www.espn.com/espn/rss/news",
+        "Specialist",
+        ("Sports",),
+    ),
+    NewsSource(
+        "MarketWatch",
+        "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+        "Specialist",
+        ("Business",),
+    ),
+    NewsSource(
+        "Variety",
+        "https://variety.com/feed/",
+        "Specialist",
+        ("Culture",),
+    ),
+    NewsSource(
+        "NASA",
+        "https://www.nasa.gov/news-release/feed/",
+        "Specialist",
+        ("Science", "Tech", "Climate"),
+    ),
     NewsSource("Google News Top", "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("World", "US")),
     NewsSource("Google News World", "https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("World",)),
     NewsSource("Google News Business", "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("Business",)),
     NewsSource("Google News Technology", "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("Tech", "AI")),
     NewsSource("Google News Science", "https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("Science",)),
     NewsSource("Google News Health", "https://news.google.com/rss/headlines/section/topic/HEALTH?hl=en-US&gl=US&ceid=US:en", "Aggregator", ("Health",)),
+    NewsSource(
+        "Drudge Report",
+        "https://feedpress.me/drudgereportfeed",
+        "Aggregator",
+        ("World", "US", "Politics", "Business", "Tech", "Culture"),
+        item_limit=20,
+    ),
     NewsSource("Reddit r/news", "https://www.reddit.com/r/news/hot/.rss", "Social", ("Reddit Hot", "US", "World")),
     NewsSource("Reddit r/worldnews", "https://www.reddit.com/r/worldnews/hot/.rss", "Social", ("Reddit Hot", "World")),
     NewsSource("Reddit r/technology", "https://www.reddit.com/r/technology/hot/.rss", "Social", ("Reddit Hot", "Tech")),
@@ -212,7 +318,9 @@ MAJOR_OUTLET_MARKERS = (
     "nbc news",
     "new york times",
     "npr",
+    "pbs news",
     "reuters",
+    "rnz",
     "sky news",
     "wall street journal",
     "washington post",
@@ -220,21 +328,35 @@ MAJOR_OUTLET_MARKERS = (
 
 DOMAIN_SOURCE_NAMES = {
     "abcnews.go.com": "ABC News",
+    "abc.net.au": "ABC Australia",
     "aljazeera.com": "Al Jazeera",
     "apnews.com": "Associated Press",
     "bbc.co.uk": "BBC",
     "bbc.com": "BBC",
     "bloomberg.com": "Bloomberg",
     "cbsnews.com": "CBS News",
+    "cbc.ca": "CBC News",
     "cnn.com": "CNN",
     "dw.com": "Deutsche Welle",
     "ft.com": "Financial Times",
     "france24.com": "France 24",
+    "euronews.com": "Euronews",
+    "espn.com": "ESPN",
+    "marketwatch.com": "MarketWatch",
+    "nasa.gov": "NASA",
     "nbcnews.com": "NBC News",
     "npr.org": "NPR",
     "nytimes.com": "New York Times",
+    "pbs.org": "PBS News",
+    "politico.com": "Politico",
+    "propublica.org": "ProPublica",
     "reuters.com": "Reuters",
+    "rnz.co.nz": "RNZ",
+    "sky.com": "Sky News",
+    "techcrunch.com": "TechCrunch",
     "theguardian.com": "The Guardian",
+    "theverge.com": "The Verge",
+    "variety.com": "Variety",
     "washingtonpost.com": "Washington Post",
     "wsj.com": "Wall Street Journal",
 }
@@ -1169,15 +1291,7 @@ def has_enough_reported_material(title: str, summary: str) -> bool:
     return len(useful_sentences) >= 2 or (len(total_words) >= 32 and has_reported_detail_language(summary))
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
-    request = urllib.request.Request(source.url, headers=REQUEST_HEADERS)
-    try:
-        with urllib.request.urlopen(request, timeout=FEED_TIMEOUT_SECONDS) as response:
-            xml_bytes = response.read()
-    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-        return [], f"{source.name}: {exc}"
-
+def parse_source_feed(source: NewsSource, xml_bytes: bytes) -> tuple[list[Story], str | None]:
     try:
         root = ET.fromstring(xml_bytes)
     except ET.ParseError as exc:
@@ -1185,14 +1299,29 @@ def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
 
     entries = [node for node in root.iter() if local_name(node.tag) in {"item", "entry"}]
     stories: list[Story] = []
-    for entry in entries[:ITEMS_PER_SOURCE]:
+    for entry in entries[: source.item_limit]:
         title = child_text(entry, ("title",))
         link = child_link(entry)
         summary_raw = child_raw_text(entry, ("description", "summary", "content", "encoded"))
+        image_html = " ".join(
+            child.text or ""
+            for child in entry
+            if local_name(child.tag) in {"description", "summary", "content", "encoded"}
+        )
         publisher = child_text(entry, ("source",))
+        drudge_item = source.name == "Drudge Report"
+        if drudge_item:
+            direct_link = child_text(entry, ("guid",))
+            if direct_link.startswith(("https://", "http://")):
+                link = direct_link
+                direct_host = urllib.parse.urlparse(link).netloc.lower().removeprefix("www.")
+                if direct_host in {"archive.is", "archive.ph"}:
+                    continue
+                publisher_name = source_name_from_domain(direct_host)
+                publisher = f"{publisher_name} via Drudge"
         google_news_item = is_google_news_url(link)
-        summary = "" if google_news_item else clean_text(summary_raw)
-        date_text = child_text(entry, ("pubDate", "published", "updated"))
+        summary = "" if google_news_item or drudge_item else clean_text(summary_raw)
+        date_text = child_text(entry, ("pubDate", "published", "updated", "date"))
         if not title or not link:
             continue
         story_source = publisher or source.name
@@ -1206,10 +1335,21 @@ def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
                 summary_text=summary,
                 published=parse_date(date_text),
                 topics=source.topics,
-                image_url=child_image(entry, summary_raw),
+                image_url=child_image(entry, image_html or summary_raw),
             )
         )
     return stories, None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
+    request = urllib.request.Request(source.url, headers=REQUEST_HEADERS)
+    try:
+        with urllib.request.urlopen(request, timeout=FEED_TIMEOUT_SECONDS) as response:
+            xml_bytes = response.read()
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        return [], f"{source.name}: {exc}"
+    return parse_source_feed(source, xml_bytes)
 
 
 def parse_gdelt_articles(payload: object) -> list[Story]:
@@ -1300,6 +1440,7 @@ def fetch_stories(
     stories: list[Story] = []
     errors: list[str] = []
     topic_set = set(selected_topics)
+    sources_to_fetch: list[NewsSource] = []
 
     for source in NEWS_SOURCES:
         if source.group == "Aggregator" and not include_aggregators:
@@ -1308,10 +1449,16 @@ def fetch_stories(
             continue
         if topic_set and not topic_set.intersection(source.topics):
             continue
-        source_stories, error = fetch_source(source)
-        stories.extend(source_stories)
-        if error:
-            errors.append(error)
+        sources_to_fetch.append(source)
+
+    sources_to_fetch.extend(keyword_news_source(keyword) for keyword in custom_keywords)
+    worker_count = min(MAX_FEED_WORKERS, len(sources_to_fetch))
+    if worker_count:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            for source_stories, error in executor.map(fetch_source, sources_to_fetch):
+                stories.extend(source_stories)
+                if error:
+                    errors.append(error)
 
     if include_gdelt:
         gdelt_stories, error = fetch_gdelt_stories()
@@ -1320,12 +1467,6 @@ def fetch_stories(
                 story for story in gdelt_stories if topic_set.intersection(story.topics)
             ]
         stories.extend(gdelt_stories)
-        if error:
-            errors.append(error)
-
-    for keyword in custom_keywords:
-        source_stories, error = fetch_source(keyword_news_source(keyword))
-        stories.extend(source_stories)
         if error:
             errors.append(error)
 
@@ -1509,6 +1650,7 @@ def is_major_outlet(story: Story) -> bool:
 
 def outlet_identity(source: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", " ", source.lower()).strip()
+    normalized = re.sub(r"\s+via\s+drudge(?:\s+report)?$", "", normalized)
     aliases = (
         (("associated press", "ap news"), "associated press"),
         (("new york times", "nyt"), "new york times"),
@@ -1561,6 +1703,7 @@ def story_score(
     major_outlet_score = 24.0 if is_major_outlet(story) else 0.0
     breaking_score = min(3, breaking_term_count(story)) * 14.0
     social_penalty = 32.0 if story.group == "Social" and references == 1 else 0.0
+    aggregator_penalty = 14.0 if story.group == "Aggregator" and references == 1 else 0.0
     keyword_boost = keyword_match_count(story, keywords) * 34.0
     return (
         recency_score
@@ -1571,6 +1714,7 @@ def story_score(
         + breaking_score
         + keyword_boost
         - social_penalty
+        - aggregator_penalty
     )
 
 
@@ -1579,6 +1723,7 @@ def representative_quality(story: Story) -> tuple[int, int, int]:
     substantial_feed_text = int(has_enough_reported_material(story.title, story.summary_text))
     source_priority = {
         "Major News": 4,
+        "Specialist": 3,
         "Social": 3,
         "Aggregator": 2,
         "GDELT": 2,
@@ -1594,6 +1739,7 @@ def article_candidate_quality(story: Story) -> tuple[int, int, int]:
     source_priority = {
         "Major News": 4,
         "GDELT": 3,
+        "Specialist": 3,
         "Aggregator": 2,
         "Social": 1,
         "Custom": 1,
@@ -3645,7 +3791,11 @@ def main() -> None:
             st.slider("Summary depth", min_value=1, max_value=5, step=1, key="detail")
         with col2:
             st.toggle("Reddit and Hacker News", key="include_social")
-            st.toggle("Google News aggregators", key="include_aggregators")
+            st.toggle(
+                "News aggregators",
+                key="include_aggregators",
+                help="Include Google News and the Drudge Report discovery feed.",
+            )
             st.toggle(
                 "GDELT global discovery",
                 key="include_gdelt",

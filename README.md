@@ -81,20 +81,41 @@ The news discovery sources and article extractor are token-free. An AI key is re
 - CNN RSS
 - ABC News RSS
 - CBS News RSS
+- PBS News RSS
+- Sky News RSS
+- Deutsche Welle RSS
+- France 24 RSS
+- Euronews RSS
+- CBC News RSS
+- ABC Australia RSS
+- RNZ RSS
+- ProPublica RSS
+- Politico RSS
+- TechCrunch RSS
+- The Verge RSS
+- ESPN RSS
+- MarketWatch RSS
+- Variety RSS
+- NASA RSS
 - Google News RSS
+- Drudge Report discovery feed
 - GDELT DOC API
 - Reddit RSS
 - Hacker News RSS
 
 Google News and GDELT are used as discovery layers, while direct publisher pages remain the
-evidence source for each AI summary. GDELT is an
+evidence source for each AI summary. Drudge is also treated only as a discovery signal:
+Skim follows its public third-party feed to the original publisher, excludes archive-mirror
+links, and does not count "via Drudge" as another independent newsroom. GDELT is an
 [open platform available without a fee](https://www.gdeltproject.org/about.html), and its
 public API does not require a key. Skim caches GDELT requests for 10 minutes to respect its
 public rate limit and includes the required GDELT attribution. It is off by default in
 Customize so a busy public API never delays the core briefing.
 
 The main ranking favors independent-outlet confirmation, coverage velocity, freshness,
-major-newsroom authority, and concrete breaking-news signals.
+major-newsroom authority, and concrete breaking-news signals. Specialist feeds must gain
+independent confirmation before they enter the high-signal list. Feed retrieval runs in
+parallel so the larger source pool does not create a serial refresh delay.
 
 ## GitHub setup
 
