@@ -649,33 +649,23 @@ def page_style() -> None:
                 min-height: 0.76rem;
             }
 
-            .compact-headline-age {
-                color: #6f7f92;
-                margin-left: auto;
-                text-transform: none;
-            }
-
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
-            [data-testid="stCaptionContainer"] {
+            .compact-headline-meta,
+            .compact-headline-time {
                 color: #8390a1;
                 font-size: 0.7rem;
                 line-height: 1.15;
-                margin-top: 0;
-                padding-bottom: 0;
-            }
-
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
-            [data-testid="stElementContainer"]:has([data-testid="stCaptionContainer"]) {
-                height: auto !important;
-                min-height: 0.82rem;
-            }
-
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
-            [data-testid="stCaptionContainer"] p {
-                color: inherit;
-                font-size: inherit;
-                line-height: inherit;
                 margin: 0;
+            }
+
+            .compact-headline-time {
+                font-size: 0.68rem;
+                margin-top: 0.02rem;
+            }
+
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
+            [data-testid="stElementContainer"]:has(.compact-headline-meta) {
+                height: auto !important;
+                min-height: 1.58rem;
             }
 
             .st-key-headline_feed {
@@ -694,8 +684,8 @@ def page_style() -> None:
             }
 
             .story-title {
-                font-size: 1.575rem !important;
-                line-height: 1.2 !important;
+                font-size: var(--story-title-size, 1.575rem) !important;
+                line-height: 1.14 !important;
                 margin: 0 0 0.55rem 0 !important;
                 color: var(--skim-ink);
                 max-width: 34rem;
@@ -892,8 +882,7 @@ def page_style() -> None:
                 }
 
                 .story-title {
-                    font-size: 1.575rem !important;
-                    line-height: 1.2 !important;
+                    font-size: var(--story-title-mobile-size, 1.3rem) !important;
                 }
 
                 .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button {
@@ -910,10 +899,6 @@ def page_style() -> None:
                     text-overflow: clip !important;
                 }
 
-                .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
-                [data-testid="stElementContainer"]:has([data-testid="stCaptionContainer"]) {
-                    min-height: 1.7rem;
-                }
             }
         </style>
         """,
@@ -3031,6 +3016,14 @@ def coverage_outlet_text(ranked_story: RankedStory) -> str:
     return label
 
 
+def expanded_headline_font_sizes(display_headline: str, has_image: bool) -> tuple[float, float]:
+    headline_length = max(1, len(clean_text(display_headline)))
+    desktop_capacity = 62 if has_image else 92
+    desktop_size = max(1.0, min(1.575, 1.575 * desktop_capacity / headline_length))
+    mobile_size = max(0.9, min(1.3, 1.3 * 58 / headline_length))
+    return desktop_size, mobile_size
+
+
 def render_story_header(
     ranked_story: RankedStory,
     display_headline: str,
@@ -3063,10 +3056,14 @@ def render_story_header(
             key=headline_button_key,
             use_container_width=True,
         )
-        st.caption(
+        st.markdown(
+            f'<div class="compact-headline-meta">'
             f"{html.escape(coverage_outlet_text(ranked_story))} · "
-            f"{ranked_story.topic_story_count} {report_word} in this cluster · "
-            f'<span class="category-time {category_class}">{html.escape(story_age(story))}</span>',
+            f"{ranked_story.topic_story_count} {report_word} in this cluster"
+            f'</div>'
+            f'<div class="compact-headline-time category-time {category_class}">'
+            f"{html.escape(story_age(story))}"
+            f'</div>',
             unsafe_allow_html=True,
         )
         return pressed
@@ -3083,8 +3080,16 @@ def render_story_header(
     )
 
     story_title_text = html.escape(display_headline)
+    desktop_size, mobile_size = expanded_headline_font_sizes(
+        display_headline,
+        bool(story.image_url),
+    )
+    title_style = (
+        f"--story-title-size:{desktop_size:.3f}rem;"
+        f"--story-title-mobile-size:{mobile_size:.3f}rem"
+    )
     if story.image_url:
-        story_title = f'<h2 class="story-title">{story_title_text}</h2>'
+        story_title = f'<h2 class="story-title" style="{title_style}">{story_title_text}</h2>'
         title_col, image_col = st.columns([3, 1], vertical_alignment="top")
         with title_col:
             st.markdown(story_title, unsafe_allow_html=True)
@@ -3092,7 +3097,10 @@ def render_story_header(
             image_url = html.escape(story.image_url, quote=True)
             st.markdown(f'<img class="story-image" src="{image_url}" alt="">', unsafe_allow_html=True)
     else:
-        story_title = f'<h2 class="story-title story-title-full">{story_title_text}</h2>'
+        story_title = (
+            f'<h2 class="story-title story-title-full" style="{title_style}">'
+            f"{story_title_text}</h2>"
+        )
         st.markdown(story_title, unsafe_allow_html=True)
     return False
 
@@ -3164,8 +3172,20 @@ def render_headline_story(ranked_story: RankedStory, detail: int) -> None:
     expanded_story_ids = set(st.session_state.expanded_story_ids)
     is_expanded = story.id in expanded_story_ids
     with st.container(border=True):
+        prepared = None
+        attempted_cost = 0.0
         if is_expanded:
-            render_story_header(ranked_story, clean_headline_source(story.title))
+            summary_key = f"headline-{st.session_state.batch_refresh_id}-{story.id}"
+            with st.spinner("Reading the publisher article and building this brief..."):
+                prepared, attempted_cost = prepare_ranked_story(ranked_story, detail, summary_key)
+            if prepared:
+                record_batch_ai_cost([prepared], summary_key, attempted_cost)
+            expanded_headline = (
+                str(prepared.card.get("__headline", ""))
+                if prepared
+                else clean_headline_source(story.title)
+            )
+            render_story_header(ranked_story, expanded_headline)
             action_pressed = st.button("Close brief", key=f"expand-{story.id}", icon=":material/expand_less:")
         else:
             action_pressed = render_story_header(
@@ -3187,11 +3207,7 @@ def render_headline_story(ranked_story: RankedStory, detail: int) -> None:
             return
 
         st.markdown('<div class="headline-brief-divider"></div>', unsafe_allow_html=True)
-        summary_key = f"headline-{st.session_state.batch_refresh_id}-{story.id}"
-        with st.spinner("Reading the publisher article and building this brief..."):
-            prepared, attempted_cost = prepare_ranked_story(ranked_story, detail, summary_key)
         if prepared:
-            record_batch_ai_cost([prepared], summary_key, attempted_cost)
             render_story_details(prepared)
             return
 

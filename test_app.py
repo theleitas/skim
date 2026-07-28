@@ -459,6 +459,26 @@ class ArticlePipelineTests(unittest.TestCase):
             "BBC News, Reuters, The Guardian · 2 more outlets",
         )
 
+    def test_expanded_headline_font_scales_down_for_longer_text(self) -> None:
+        short_desktop, short_mobile = app.expanded_headline_font_sizes(
+            "Central bank cuts interest rates",
+            has_image=True,
+        )
+        long_desktop, long_mobile = app.expanded_headline_font_sizes(
+            "Central bank unexpectedly cuts interest rates as global markets confront renewed volatility",
+            has_image=True,
+        )
+        full_width_desktop, _ = app.expanded_headline_font_sizes(
+            "Central bank unexpectedly cuts interest rates as global markets confront renewed volatility",
+            has_image=False,
+        )
+
+        self.assertLess(long_desktop, short_desktop)
+        self.assertLess(long_mobile, short_mobile)
+        self.assertGreaterEqual(full_width_desktop, long_desktop)
+        self.assertGreaterEqual(long_desktop, 1.0)
+        self.assertGreaterEqual(long_mobile, 0.9)
+
     def test_category_prefers_headline_signals_over_incidental_summary_words(self) -> None:
         economy_story = self.news_story(
             "economy-headline",
