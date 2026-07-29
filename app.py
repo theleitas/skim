@@ -597,6 +597,62 @@ def page_style() -> None:
                 padding: 0;
             }
 
+            .skim-focus-mode {
+                position: fixed;
+                inset: 0;
+                z-index: 2147483000;
+                background: #000000;
+                animation: skim-focus-blackout 160ms ease-out both;
+            }
+
+            .skim-working-card {
+                display: none;
+            }
+
+            .stApp:has(.skim-focus-mode)
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.skim-working-card) {
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                z-index: 2147483001;
+                width: min(820px, calc(100vw - 2rem));
+                margin: 0 !important;
+                transform: translate(-50%, -50%);
+                animation: skim-working-card-in 220ms ease-out both;
+            }
+
+            .stApp:has(.skim-focus-mode)
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.skim-working-card)
+            > div[data-testid="stVerticalBlock"] {
+                background: #050607;
+                border-color: color-mix(
+                    in srgb,
+                    var(--skim-category, var(--skim-accent)) 68%,
+                    #343a42
+                );
+                box-shadow: 0 0 26px color-mix(
+                    in srgb,
+                    var(--skim-category, var(--skim-accent)) 24%,
+                    transparent
+                );
+            }
+
+            @keyframes skim-focus-blackout {
+                from { opacity: 0; }
+                to { opacity: 1; }
+            }
+
+            @keyframes skim-working-card-in {
+                from {
+                    opacity: 0;
+                    transform: translate(-50%, calc(-50% + 8px));
+                }
+                to {
+                    opacity: 1;
+                    transform: translate(-50%, -50%);
+                }
+            }
+
             .st-key-headline_feed > [data-testid="stLayoutWrapper"] > div[data-testid="stVerticalBlock"] {
                 position: relative;
                 background: #050607;
@@ -1773,6 +1829,8 @@ def complete_story_refresh() -> None:
     st.session_state.last_settings = None
     st.session_state.deep_analyses = {}
     st.session_state.research_briefs = {}
+    st.session_state.prepared_summary_results = {}
+    st.session_state.extracting_story_id = ""
     st.session_state.expanded_story_ids = set()
 
 
@@ -1780,6 +1838,8 @@ def load_next_story_batch() -> None:
     st.session_state.current_cluster_keys = []
     st.session_state.deep_analyses = {}
     st.session_state.research_briefs = {}
+    st.session_state.prepared_summary_results = {}
+    st.session_state.extracting_story_id = ""
     st.session_state.expanded_story_ids = set()
 
 
@@ -3758,6 +3818,7 @@ def render_headline_story(
     story = ranked_story.story
     expanded_story_ids = set(st.session_state.expanded_story_ids)
     is_expanded = story.id in expanded_story_ids
+    is_extracting = st.session_state.extracting_story_id == story.id
     with st.container(border=True):
         prepared = None
         attempted_cost = 0.0
@@ -3768,21 +3829,64 @@ def render_headline_story(
             )
             provider = configured_ai_provider()
             summary_model = ai_model(provider, deep=False) if provider else "not configured"
-            with st.spinner(
-                f"Using AI ({summary_model}) to extract and summarize this story..."
-            ):
-                prepared, attempted_cost = prepare_ranked_story(
-                    ranked_story,
-                    detail,
-                    summary_key,
-                    plain_language,
+            cached_result = st.session_state.prepared_summary_results.get(summary_key)
+
+            if is_extracting and cached_result is not None:
+                st.session_state.extracting_story_id = ""
+                st.rerun()
+
+            if is_extracting and cached_result is None:
+                st.markdown('<div class="skim-working-card"></div>', unsafe_allow_html=True)
+                render_story_header(ranked_story, clean_headline_source(story.title))
+                try:
+                    with st.spinner(
+                        f"Using AI ({summary_model}) to extract and summarize this story..."
+                    ):
+                        prepared, attempted_cost = prepare_ranked_story(
+                            ranked_story,
+                            detail,
+                            summary_key,
+                            plain_language,
+                        )
+                except Exception as exc:
+                    record_generation_issue(
+                        f"Skim could not prepare the selected story: {clean_text(str(exc))[:180]}"
+                    )
+                st.session_state.prepared_summary_results[summary_key] = (
+                    prepared,
+                    attempted_cost,
                 )
-            record_batch_ai_cost(
-                [prepared] if prepared else [],
-                summary_key,
-                attempted_cost,
-                attempted_articles=1 if attempted_cost > 0 else 0,
-            )
+                record_batch_ai_cost(
+                    [prepared] if prepared else [],
+                    summary_key,
+                    attempted_cost,
+                    attempted_articles=1 if attempted_cost > 0 else 0,
+                )
+                st.session_state.extracting_story_id = ""
+                st.rerun()
+
+            if cached_result is not None:
+                prepared, attempted_cost = cached_result
+            else:
+                with st.spinner(
+                    f"Using AI ({summary_model}) to extract and summarize this story..."
+                ):
+                    prepared, attempted_cost = prepare_ranked_story(
+                        ranked_story,
+                        detail,
+                        summary_key,
+                        plain_language,
+                    )
+                st.session_state.prepared_summary_results[summary_key] = (
+                    prepared,
+                    attempted_cost,
+                )
+                record_batch_ai_cost(
+                    [prepared] if prepared else [],
+                    summary_key,
+                    attempted_cost,
+                    attempted_articles=1 if attempted_cost > 0 else 0,
+                )
             expanded_headline = (
                 str(prepared.card.get("__headline", ""))
                 if prepared
@@ -3800,6 +3904,7 @@ def render_headline_story(
         if not is_expanded and action_pressed:
             expanded_story_ids.add(story.id)
             st.session_state.expanded_story_ids = expanded_story_ids
+            st.session_state.extracting_story_id = story.id
             st.rerun()
 
         if not is_expanded:
@@ -3827,6 +3932,8 @@ def render_headline_story(
         ):
             expanded_story_ids.discard(story.id)
             st.session_state.expanded_story_ids = expanded_story_ids
+            if st.session_state.extracting_story_id == story.id:
+                st.session_state.extracting_story_id = ""
             st.rerun()
 
 
@@ -4171,6 +4278,10 @@ def main() -> None:
         st.session_state.deep_analyses = {}
     if "research_briefs" not in st.session_state:
         st.session_state.research_briefs = {}
+    if "prepared_summary_results" not in st.session_state:
+        st.session_state.prepared_summary_results = {}
+    if "extracting_story_id" not in st.session_state:
+        st.session_state.extracting_story_id = ""
     if "expanded_story_ids" not in st.session_state:
         st.session_state.expanded_story_ids = set()
     if "generation_issues" not in st.session_state:
@@ -4195,6 +4306,9 @@ def main() -> None:
     st.session_state.setdefault("show_archived", False)
     initialize_keyword_state()
     initialize_ai_cost_state()
+
+    if st.session_state.extracting_story_id:
+        st.markdown('<div class="skim-focus-mode"></div>', unsafe_allow_html=True)
 
     render_header()
 
@@ -4233,11 +4347,22 @@ def main() -> None:
         ranked_stories = rank_stories(stories, keywords)
 
     batch = build_headline_batch(ranked_stories, show_archived)
+    extracting_story_id = st.session_state.extracting_story_id
+    if extracting_story_id:
+        focused_batch = [
+            item for item in batch if item.story.id == extracting_story_id
+        ]
+        if not focused_batch:
+            st.session_state.extracting_story_id = ""
+            st.rerun()
+        batch_to_render = focused_batch
+    else:
+        batch_to_render = batch
     st.session_state.generation_issues = []
     with story_stream:
-        for ranked_story in batch:
+        for ranked_story in batch_to_render:
             render_headline_story(ranked_story, detail, plain_language)
-        if batch and st.button(
+        if not extracting_story_id and batch and st.button(
             "Load 20 more",
             key="load-more-headlines",
             icon=":material/add:",
