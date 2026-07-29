@@ -252,11 +252,41 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertAlmostEqual(cost, 3.6125)
 
+    def test_deep_analysis_exposes_openai_usage_cost(self) -> None:
+        evidence_text = " ".join(
+            "Officials confirmed the policy change and described its consequences."
+            for _ in range(30)
+        )
+        evidence = app.ArticleEvidence(
+            url=self.story.link,
+            title=self.story.title,
+            text=evidence_text,
+            word_count=len(evidence_text.split()),
+        )
+        ai_result = {
+            "analysis": "The decision changes how local officials will evaluate the reported cases.",
+            "watch_next": "Watch for the state epidemiology review.",
+            "research": "Study cancer-cluster methodology.",
+            "__usage_input_tokens": "2000",
+            "__usage_output_tokens": "500",
+            "__usage_cached_input_tokens": "0",
+            "__usage_cache_write_tokens": "0",
+        }
+
+        with (
+            patch.object(app, "configured_ai_provider", return_value="openai"),
+            patch.object(app, "ai_deep_analysis_cached", return_value=ai_result),
+        ):
+            result = app.deeper_analysis(self.story, evidence)
+
+        self.assertGreater(app.card_ai_cost(result), 0)
+
     def test_ai_cost_counter_does_not_count_same_batch_twice(self) -> None:
-        first_total, first_changed = app.accumulate_ai_cost(0, "", "batch-1", 0.25)
+        first_total, first_changed = app.accumulate_ai_cost(0, set(), "batch-1", 0.25)
+        recorded = {app.ai_cost_event_token("batch-1")}
         second_total, second_changed = app.accumulate_ai_cost(
             first_total,
-            "batch-1",
+            recorded,
             "batch-1",
             0.25,
         )
@@ -573,7 +603,7 @@ class ArticlePipelineTests(unittest.TestCase):
             ["Conflict", "US Politics", "Sports", "Technology", "Economy"],
         )
 
-    def test_coverage_outlet_text_lists_three_then_remaining_outlets(self) -> None:
+    def test_coverage_outlet_text_lists_first_then_remaining_outlets(self) -> None:
         ranked = app.RankedStory(
             story=self.news_story("coverage", "A widely covered story", "BBC News"),
             cluster_key="coverage",
@@ -585,7 +615,44 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertEqual(
             app.coverage_outlet_text(ranked),
-            "BBC News, Reuters, The Guardian · 2 more outlets",
+            "BBC News · 4 more outlets",
+        )
+
+        credited = replace(
+            ranked,
+            outlets=("© Photojournalist Name, Reuters", "BBC News", "NPR"),
+            references=3,
+        )
+        self.assertEqual(app.coverage_outlet_text(credited), "Reuters · 2 more outlets")
+
+    def test_headline_display_sort_is_newest_first(self) -> None:
+        newest = app.RankedStory(
+            story=self.news_story("newest", "Newest story", "BBC News", hours_ago=0.2),
+            cluster_key="newest",
+            references=1,
+            topic_story_count=1,
+            score=1.0,
+        )
+        older = app.RankedStory(
+            story=self.news_story("older", "Older story", "Reuters", hours_ago=4),
+            cluster_key="older",
+            references=5,
+            topic_story_count=5,
+            score=100.0,
+        )
+        undated = app.RankedStory(
+            story=replace(self.news_story("undated", "Undated story", "NPR"), published=None),
+            cluster_key="undated",
+            references=3,
+            topic_story_count=3,
+            score=50.0,
+        )
+
+        sorted_stories = app.sort_headlines_by_age([older, undated, newest])
+
+        self.assertEqual(
+            [ranked.story.id for ranked in sorted_stories],
+            ["newest", "older", "undated"],
         )
 
     def test_expanded_headline_font_scales_down_for_longer_text(self) -> None:
