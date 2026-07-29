@@ -887,6 +887,82 @@ def page_style() -> None:
                 padding-top: 0;
             }
 
+            .st-key-headline_feed [class*="st-key-deep_analysis_"] {
+                display: flex;
+                flex-direction: column;
+                gap: 0 !important;
+                color: #ebe5da;
+                font-size: 0.95rem;
+                line-height: 1.5;
+                background: #171512;
+                border: 1px solid #373229;
+                border-radius: 8px;
+                padding: 0.85rem 0.9rem;
+                margin-bottom: 0.95rem;
+            }
+
+            .deep-summary-field {
+                border-top: 1px solid #332f29;
+                padding-top: 0.62rem;
+                margin-top: 0.62rem;
+            }
+
+            .deep-summary-field-first {
+                border-top: 0;
+                padding-top: 0;
+                margin-top: 0;
+            }
+
+            .deep-summary-field b {
+                color: var(--skim-ink);
+            }
+
+            .st-key-headline_feed [class*="st-key-research_action_"] {
+                margin-top: 0.28rem;
+            }
+
+            .st-key-headline_feed [class*="st-key-research_action_"]
+            [data-testid="stBaseButton-tertiary"],
+            .st-key-headline_feed [class*="st-key-research_action_"]
+            [data-testid="stBaseButton-tertiary"]:hover,
+            .st-key-headline_feed [class*="st-key-research_action_"]
+            [data-testid="stBaseButton-tertiary"]:focus {
+                justify-content: flex-start !important;
+                width: auto;
+                min-height: 0;
+                height: auto;
+                padding: 0 !important;
+                background: transparent !important;
+                border: 0 !important;
+                border-radius: 0;
+                box-shadow: none !important;
+                color: var(--skim-category, var(--skim-accent)) !important;
+                font-size: 0.78rem;
+                font-style: italic;
+                font-weight: 500;
+                line-height: 1.35;
+                text-align: left;
+            }
+
+            .st-key-headline_feed [class*="st-key-research_action_"]
+            [data-testid="stBaseButton-tertiary"] * {
+                color: var(--skim-category, var(--skim-accent)) !important;
+                font-size: inherit !important;
+                font-style: italic !important;
+                font-weight: inherit;
+                line-height: inherit;
+                text-align: left;
+            }
+
+            .st-key-headline_feed [class*="st-key-research_action_"]
+            [data-testid="stBaseButton-tertiary"]:hover {
+                text-shadow: 0 0 9px color-mix(
+                    in srgb,
+                    var(--skim-category, var(--skim-accent)) 55%,
+                    transparent
+                );
+            }
+
             .lesson-link {
                 display: inline-flex;
                 align-items: center;
@@ -1696,12 +1772,14 @@ def complete_story_refresh() -> None:
     st.session_state.current_cluster_keys = []
     st.session_state.last_settings = None
     st.session_state.deep_analyses = {}
+    st.session_state.research_briefs = {}
     st.session_state.expanded_story_ids = set()
 
 
 def load_next_story_batch() -> None:
     st.session_state.current_cluster_keys = []
     st.session_state.deep_analyses = {}
+    st.session_state.research_briefs = {}
     st.session_state.expanded_story_ids = set()
 
 
@@ -2587,6 +2665,15 @@ DEEP_RESPONSE_SCHEMA = {
     "additionalProperties": False,
 }
 
+RESEARCH_BRIEF_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "brief": {"type": "string"},
+    },
+    "required": ["brief"],
+    "additionalProperties": False,
+}
+
 
 def post_json(url: str, headers: dict[str, str], payload: dict) -> dict:
     request = urllib.request.Request(
@@ -2925,6 +3012,60 @@ def ai_deep_analysis_cached(
     )
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def ai_research_brief_cached(
+    provider: str,
+    model: str,
+    story_id: str,
+    title: str,
+    research_topic: str,
+    deep_analysis: str,
+    article_text: str,
+    topics: tuple[str, ...],
+) -> dict:
+    prompt = textwrap.dedent(
+        f"""
+        NEWS EVENT: {clean_headline_source(title)}
+        CATEGORY TOPICS: {", ".join(topics)}
+        RESEARCH TOPIC: {research_topic}
+
+        <DEEP_ANALYSIS>
+        {deep_analysis}
+        </DEEP_ANALYSIS>
+
+        <ARTICLE_BODY>
+        {article_text}
+        </ARTICLE_BODY>
+        """
+    ).strip()
+    instructions = textwrap.dedent(
+        f"""
+        You are Skim's plain-language teacher. Explain the named RESEARCH TOPIC, using reliable
+        established knowledge and the supplied event only to show why the topic is relevant.
+        Return a single brief of 3-5 cohesive sentences. Start by defining the topic in direct
+        language. Then teach the key mechanism, history, institution, or distinction a reader
+        should know. End by connecting that knowledge to the news event without repeating the
+        event summary.
+
+        {summary_readability_guidance(True)}
+
+        Keep the brief between 65 and 140 words. Every sentence must teach something concrete.
+        Do not mention an article, story, headline, research trail, prompt, or AI. Do not give
+        advice about what to read or click. Do not invent current-event facts.
+        """
+    ).strip()
+    return ai_json(
+        provider,
+        model,
+        instructions,
+        prompt,
+        effort="high",
+        max_output_tokens=1800,
+        schema_name="skim_research_brief",
+        schema=RESEARCH_BRIEF_RESPONSE_SCHEMA,
+    )
+
+
 def learning_links_text(links: tuple[tuple[str, str], ...]) -> str:
     return " ".join(f"[{label}]({url})" for label, url in links)
 
@@ -3208,6 +3349,7 @@ def deeper_analysis(story: Story, evidence: ArticleEvidence) -> dict[str, str]:
         result["Watch next"] = watch_next
     research_intro = f"{research} " if research else ""
     result["Research trail"] = f"{research_intro}Learn more: {learning_links_text(fallback_links)}"
+    result["__research_topic"] = research
     if provider == "openai":
         ai_cost = result_openai_cost(ai_result, model)
         if ai_cost is None:
@@ -3218,6 +3360,70 @@ def deeper_analysis(story: Story, evidence: ArticleEvidence) -> dict[str, str]:
                 overhead_tokens=520,
             )
             ai_cost = openai_cost(model, estimated_input, 1_500)
+        result["__ai_cost"] = f"{ai_cost or 0.0:.8f}"
+    return result
+
+
+def research_topic_from_analysis(analysis: dict[str, str]) -> str:
+    hidden_topic = clean_text(str(analysis.get("__research_topic", "")))
+    if hidden_topic:
+        return hidden_topic
+    research_trail = str(analysis.get("Research trail", ""))
+    topic_text = re.split(r"\s*Learn more:\s*", research_trail, maxsplit=1, flags=re.IGNORECASE)[0]
+    return clean_text(strip_markdown_links(topic_text))
+
+
+def research_topic_brief(
+    story: Story,
+    evidence: ArticleEvidence,
+    analysis: dict[str, str],
+) -> dict[str, str]:
+    provider = configured_ai_provider()
+    if not provider:
+        raise ValueError("Add an AI API key in Streamlit secrets to build this research brief.")
+
+    research_topic = research_topic_from_analysis(analysis)
+    if not research_topic:
+        raise ValueError("The deeper analysis did not identify a focused research topic.")
+
+    deep_context = " ".join(
+        clean_text(str(analysis.get(label, "")))
+        for label in ("Deeper analysis", "Watch next")
+        if analysis.get(label)
+    )
+    topics = infer_topics(story)
+    model = ai_model(provider, deep=True)
+    ai_result = ai_research_brief_cached(
+        provider,
+        model,
+        story.id,
+        story.title,
+        research_topic,
+        deep_context,
+        evidence.text,
+        topics,
+    )
+    brief = clean_text(strip_markdown_links(str(ai_result.get("brief", ""))))
+    brief_sentence_count = sentence_count(brief)
+    if (
+        not 3 <= brief_sentence_count <= 5
+        or len(brief.split()) < 50
+        or prose_has_forbidden_language(brief)
+    ):
+        raise ValueError("The AI provider did not return a clear 3-5 sentence research brief.")
+
+    result = {"Research brief": brief}
+    if provider == "openai":
+        ai_cost = result_openai_cost(ai_result, model)
+        if ai_cost is None:
+            estimated_input = estimated_token_count(
+                story.title,
+                research_topic,
+                deep_context,
+                evidence.text,
+                overhead_tokens=500,
+            )
+            ai_cost = openai_cost(model, estimated_input, 650)
         result["__ai_cost"] = f"{ai_cost or 0.0:.8f}"
     return result
 
@@ -3412,6 +3618,72 @@ def render_story_header(
     return False
 
 
+def render_deep_analysis(prepared_story: PreparedStory) -> None:
+    story = prepared_story.ranked_story.story
+    analysis = st.session_state.deep_analyses.get(story.id)
+    if not analysis:
+        return
+
+    visible_rows = [
+        (label, value)
+        for label, value in analysis.items()
+        if not label.startswith("__")
+    ]
+    with st.container(key=f"deep_analysis_{story.id}"):
+        for index, (label, value) in enumerate(visible_rows):
+            field_classes = "deep-summary-field"
+            if index == 0:
+                field_classes += " deep-summary-field-first"
+            label_html = f"<b>{html.escape(label)}:</b> "
+            st.markdown(
+                f'<div class="{field_classes}">{label_html}{render_summary_value(value)}</div>',
+                unsafe_allow_html=True,
+            )
+
+            if label != "Research trail" or not research_topic_from_analysis(analysis):
+                continue
+
+            with st.container(key=f"research_action_{story.id}"):
+                summarize_research = st.button(
+                    "Summarize this research with AI.",
+                    key=f"research-brief-{story.id}",
+                    type="tertiary",
+                    help="Build a short plain-language lesson about the research topic.",
+                )
+            if summarize_research:
+                provider = configured_ai_provider()
+                model = ai_model(provider, deep=True) if provider else "not configured"
+                with st.spinner(f"Using AI ({model}) to explain this research topic..."):
+                    try:
+                        brief = research_topic_brief(story, prepared_story.evidence, analysis)
+                        st.session_state.research_briefs[story.id] = brief
+                        topic_token = hashlib.sha256(
+                            research_topic_from_analysis(analysis).encode("utf-8")
+                        ).hexdigest()[:12]
+                        record_batch_ai_cost(
+                            [],
+                            (
+                                f"research-{st.session_state.batch_refresh_id}-"
+                                f"{story.id}-{topic_token}"
+                            ),
+                            card_ai_cost(brief),
+                            attempted_articles=1,
+                        )
+                    except Exception as exc:
+                        st.session_state.research_briefs[story.id] = {
+                            "Research brief": f"The AI provider could not complete this request: {exc}"
+                        }
+
+        research_brief = st.session_state.research_briefs.get(story.id)
+        if research_brief:
+            brief_text = str(research_brief.get("Research brief", ""))
+            st.markdown(
+                '<div class="deep-summary-field"><b>Research brief:</b> '
+                f"{html.escape(brief_text)}</div>",
+                unsafe_allow_html=True,
+            )
+
+
 def render_story_details(prepared_story: PreparedStory) -> None:
     ranked_story = prepared_story.ranked_story
     story = ranked_story.story
@@ -3453,6 +3725,7 @@ def render_story_details(prepared_story: PreparedStory) -> None:
                     try:
                         analysis = deeper_analysis(story, evidence)
                         st.session_state.deep_analyses[story.id] = analysis
+                        st.session_state.research_briefs.pop(story.id, None)
                         record_batch_ai_cost(
                             [],
                             f"deep-{st.session_state.batch_refresh_id}-{story.id}",
@@ -3464,14 +3737,7 @@ def render_story_details(prepared_story: PreparedStory) -> None:
                             "Deeper analysis": f"The AI provider could not complete this request: {exc}"
                         }
 
-    if story.id in st.session_state.deep_analyses:
-        deep_rows = ""
-        for label, value in st.session_state.deep_analyses[story.id].items():
-            if label.startswith("__"):
-                continue
-            label_html = f"<b>{html.escape(label)}:</b> "
-            deep_rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
-        st.markdown(f'<div class="summary-grid">{deep_rows}</div>', unsafe_allow_html=True)
+    render_deep_analysis(prepared_story)
 
     source = f"Source: {article_story.source}"
     st.markdown(f'<div class="story-source">{html.escape(source)}</div>', unsafe_allow_html=True)
@@ -3903,6 +4169,8 @@ def main() -> None:
         st.session_state.last_settings = None
     if "deep_analyses" not in st.session_state:
         st.session_state.deep_analyses = {}
+    if "research_briefs" not in st.session_state:
+        st.session_state.research_briefs = {}
     if "expanded_story_ids" not in st.session_state:
         st.session_state.expanded_story_ids = set()
     if "generation_issues" not in st.session_state:

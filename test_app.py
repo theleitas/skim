@@ -293,6 +293,58 @@ class ArticlePipelineTests(unittest.TestCase):
             result = app.deeper_analysis(self.story, evidence)
 
         self.assertGreater(app.card_ai_cost(result), 0)
+        self.assertEqual(result["__research_topic"], "Study cancer-cluster methodology.")
+
+    def test_research_topic_falls_back_to_visible_research_trail(self) -> None:
+        analysis = {
+            "Research trail": (
+                "Understand cancer-cluster methodology. "
+                "Learn more: [CDC health topics](https://www.cdc.gov/health-topics.html)"
+            )
+        }
+
+        topic = app.research_topic_from_analysis(analysis)
+
+        self.assertEqual(topic, "Understand cancer-cluster methodology.")
+
+    def test_research_topic_brief_is_simple_and_tracks_openai_cost(self) -> None:
+        evidence_text = " ".join(
+            "Officials asked epidemiologists to review whether the reported cases exceed expectations."
+            for _ in range(30)
+        )
+        evidence = app.ArticleEvidence(
+            url=self.story.link,
+            title=self.story.title,
+            text=evidence_text,
+            word_count=len(evidence_text.split()),
+        )
+        analysis = {
+            "Deeper analysis": "Officials must compare observed cases with the expected local rate.",
+            "Watch next": "Watch for the state epidemiology review.",
+            "__research_topic": "Cancer-cluster methodology",
+        }
+        ai_result = {
+            "brief": (
+                "A cancer cluster is an unusual number of similar cancers found in a defined "
+                "place and time. Investigators first compare the observed cases with the number "
+                "normally expected for people of the same ages and backgrounds. They also check "
+                "whether the diagnoses share a cancer type, exposure, or another plausible link. "
+                "That process helps separate a meaningful pattern from a chance grouping of rare cases."
+            ),
+            "__usage_input_tokens": "1800",
+            "__usage_output_tokens": "220",
+            "__usage_cached_input_tokens": "0",
+            "__usage_cache_write_tokens": "0",
+        }
+
+        with (
+            patch.object(app, "configured_ai_provider", return_value="openai"),
+            patch.object(app, "ai_research_brief_cached", return_value=ai_result),
+        ):
+            result = app.research_topic_brief(self.story, evidence, analysis)
+
+        self.assertEqual(app.sentence_count(result["Research brief"]), 4)
+        self.assertGreater(app.card_ai_cost(result), 0)
 
     def test_ai_cost_counter_does_not_count_same_batch_twice(self) -> None:
         first_total, first_changed = app.accumulate_ai_cost(0, set(), "batch-1", 0.25)
