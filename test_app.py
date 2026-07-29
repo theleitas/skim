@@ -212,6 +212,19 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertEqual(app.card_quality_errors(good_card, self.story), ())
 
+    def test_plain_language_guidance_simplifies_without_losing_accuracy(self) -> None:
+        guidance = app.summary_readability_guidance(True)
+
+        self.assertIn("20% more simply", guidance)
+        self.assertIn("Explain unavoidable jargon", guidance)
+        self.assertIn("Preserve important names, numbers, dates, uncertainty, and nuance", guidance)
+
+    def test_standard_readability_guidance_restores_news_prose(self) -> None:
+        guidance = app.summary_readability_guidance(False)
+
+        self.assertIn("general-audience news prose", guidance)
+        self.assertNotIn("20% more simply", guidance)
+
     def test_smart_summary_repairs_instead_of_using_canned_fallback(self) -> None:
         evidence_text = " ".join(
             "Ladera Ranch families asked California officials to investigate six cancer diagnoses."

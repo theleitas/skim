@@ -50,7 +50,7 @@ GDELT_QUERY = (
 )
 OPENAI_SUMMARY_MODEL = "gpt-5.6-terra"
 OPENAI_DEEP_MODEL = "gpt-5.6-terra"
-AI_SUMMARY_PROMPT_VERSION = "grounded-article-v1"
+AI_SUMMARY_PROMPT_VERSION = "grounded-article-v2-plain-language"
 GEMINI_SUMMARY_MODEL = "gemini-2.5-flash"
 GEMINI_DEEP_MODEL = "gemini-2.5-pro"
 GROQ_SUMMARY_MODEL = "llama-3.3-70b-versatile"
@@ -2727,6 +2727,22 @@ def ai_json(
     return openai_json(model, instructions, prompt, effort, max_output_tokens, schema_name, schema)
 
 
+def summary_readability_guidance(plain_language: bool) -> str:
+    if not plain_language:
+        return (
+            "Use polished general-audience news prose. Explain specialist terms when they are "
+            "necessary to understand the event."
+        )
+    return (
+        "Write about 20% more simply than standard news coverage for an intelligent reader who "
+        "is new to the topic. Prefer familiar, concrete words and active voice. Aim for most "
+        "sentences to be 12-22 words, and split long chains of causes or consequences into "
+        "separate sentences. Explain unavoidable jargon immediately in plain language. Preserve "
+        "important names, numbers, dates, uncertainty, and nuance. Never sound childish, chatty, "
+        "patronizing, or less precise."
+    )
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def ai_summary_cached(
     provider: str,
@@ -2742,6 +2758,7 @@ def ai_summary_cached(
     article_text: str,
     topics: tuple[str, ...],
     detail: int,
+    plain_language: bool,
 ) -> dict:
     prompt = textwrap.dedent(
         f"""
@@ -2758,33 +2775,39 @@ def ai_summary_cached(
         </ARTICLE_BODY>
         """
     ).strip()
-    instructions = """
-    You are the editor of Skim. Read the supplied publisher article body closely before
-    writing. The current event facts must come from that body. You may use reliable
-    general knowledge only to explain established background or cautious implications,
-    never to add unreported current-event facts.
+    instructions = textwrap.dedent(
+        f"""
+        You are the editor of Skim. Read the supplied publisher article body closely before
+        writing. The current event facts must come from that body. You may use reliable
+        general knowledge only to explain established background or cautious implications,
+        never to add unreported current-event facts.
 
-    Return the required JSON fields:
-    - headline: 5-10 words and no more than 78 characters. State the central development as a complete, natural thought.
-      Keep names, places, and stakes that make it meaningful. No ellipses, label, teaser,
-      clickbait, dangling preposition, or abrupt truncation.
-    - summary: 3-4 cohesive sentences and 65-150 words. Explain who did what, where and
-      when relevant, the strongest specifics or numbers, and the immediate consequence.
-      Synthesize the body instead of copying its opening. Every sentence must add a fact
-      or a concrete implication.
-    - background: 2-3 cohesive sentences and 45-125 words. Explain the specific backstory,
-      institutional setting, historical pressure, or connected event that makes this
-      development significant. End with a disciplined assessment of what it could change
-      or what concrete development to watch. Mark uncertain consequences with may, could,
-      or would.
+        READABILITY:
+        {summary_readability_guidance(plain_language)}
 
-    Write only publishable news prose. Never refer to "the article," "this article,"
-    "the story," "this story," "the headline," a feed, coverage, reporting mechanics,
-    reading more, newsletters, or what the reader should click. Never discuss missing
-    information. Never use generic filler about public trust, legitimacy, leverage,
-    systems, pressure, or a wider struggle unless you identify the exact institution,
-    actor, and mechanism involved here. Do not repeat the summary in background.
-    """
+        Return the required JSON fields:
+        - headline: 5-10 words and no more than 78 characters. State the central development
+          as a complete, natural thought. Keep names, places, and stakes that make it
+          meaningful. No ellipses, label, teaser, clickbait, dangling preposition, or abrupt
+          truncation.
+        - summary: 3-4 cohesive sentences and 65-150 words. Explain who did what, where and
+          when relevant, the strongest specifics or numbers, and the immediate consequence.
+          Synthesize the body instead of copying its opening. Every sentence must add a fact
+          or a concrete implication.
+        - background: 2-3 cohesive sentences and 45-125 words. Explain the specific backstory,
+          institutional setting, historical pressure, or connected event that makes this
+          development significant. End with a disciplined assessment of what it could change
+          or what concrete development to watch. Mark uncertain consequences with may, could,
+          or would.
+
+        Write only publishable news prose. Never refer to "the article," "this article,"
+        "the story," "this story," "the headline," a feed, coverage, reporting mechanics,
+        reading more, newsletters, or what the reader should click. Never discuss missing
+        information. Never use generic filler about public trust, legitimacy, leverage,
+        systems, pressure, or a wider struggle unless you identify the exact institution,
+        actor, and mechanism involved here. Do not repeat the summary in background.
+        """
+    ).strip()
     return ai_json(
         provider,
         model,
@@ -2809,6 +2832,7 @@ def ai_summary_repair_cached(
     article_text: str,
     draft_json: str,
     quality_errors: tuple[str, ...],
+    plain_language: bool,
 ) -> dict:
     prompt = textwrap.dedent(
         f"""
@@ -2827,14 +2851,21 @@ def ai_summary_repair_cached(
         {"; ".join(quality_errors)}
         """
     ).strip()
-    instructions = """
-    Rewrite the rejected Skim card so every listed quality failure is fixed. Ground all
-    current facts in ARTICLE_BODY. Return only the required JSON fields. The headline is
-    5-10 words, no more than 78 characters, and a complete thought. The summary is 3-4 cohesive sentences and 65-150
-    words. The background is 2-3 specific sentences and 45-125 words. Do not mention an
-    article, story, headline, feed, coverage, newsletter, missing details, reading, or
-    clicking. Remove promotional fragments and generic analysis. Do not repeat sentences.
-    """
+    instructions = textwrap.dedent(
+        f"""
+        Rewrite the rejected Skim card so every listed quality failure is fixed. Ground all
+        current facts in ARTICLE_BODY. Return only the required JSON fields.
+
+        READABILITY:
+        {summary_readability_guidance(plain_language)}
+
+        The headline is 5-10 words, no more than 78 characters, and a complete thought. The
+        summary is 3-4 cohesive sentences and 65-150 words. The background is 2-3 specific
+        sentences and 45-125 words. Do not mention an article, story, headline, feed, coverage,
+        newsletter, missing details, reading, or clicking. Remove promotional fragments and
+        generic analysis. Do not repeat sentences.
+        """
+    ).strip()
     return ai_json(
         provider,
         model,
@@ -3051,6 +3082,7 @@ def smart_summarize(
     evidence: ArticleEvidence,
     detail: int,
     refresh_key: str,
+    plain_language: bool = True,
 ) -> SummaryAttempt:
     provider = configured_ai_provider()
     if not provider:
@@ -3077,6 +3109,7 @@ def smart_summarize(
             evidence.text,
             topics,
             detail,
+            plain_language,
         )
     except Exception as exc:
         record_generation_issue(ai_failure_message(provider, model, exc))
@@ -3109,6 +3142,7 @@ def smart_summarize(
                 evidence.text,
                 json.dumps(card, ensure_ascii=True, sort_keys=True),
                 errors,
+                plain_language,
             )
         except Exception as exc:
             record_generation_issue(ai_failure_message(provider, model, exc))
@@ -3450,7 +3484,11 @@ def render_story(prepared_story: PreparedStory) -> None:
         render_story_details(prepared_story)
 
 
-def render_headline_story(ranked_story: RankedStory, detail: int) -> None:
+def render_headline_story(
+    ranked_story: RankedStory,
+    detail: int,
+    plain_language: bool = True,
+) -> None:
     story = ranked_story.story
     expanded_story_ids = set(st.session_state.expanded_story_ids)
     is_expanded = story.id in expanded_story_ids
@@ -3458,13 +3496,21 @@ def render_headline_story(ranked_story: RankedStory, detail: int) -> None:
         prepared = None
         attempted_cost = 0.0
         if is_expanded:
-            summary_key = f"headline-{st.session_state.batch_refresh_id}-{story.id}"
+            readability_key = "plain" if plain_language else "standard"
+            summary_key = (
+                f"headline-{st.session_state.batch_refresh_id}-{story.id}-{readability_key}"
+            )
             provider = configured_ai_provider()
             summary_model = ai_model(provider, deep=False) if provider else "not configured"
             with st.spinner(
                 f"Using AI ({summary_model}) to extract and summarize this story..."
             ):
-                prepared, attempted_cost = prepare_ranked_story(ranked_story, detail, summary_key)
+                prepared, attempted_cost = prepare_ranked_story(
+                    ranked_story,
+                    detail,
+                    summary_key,
+                    plain_language,
+                )
             record_batch_ai_cost(
                 [prepared] if prepared else [],
                 summary_key,
@@ -3719,13 +3765,20 @@ def prepare_ranked_story(
     item: RankedStory,
     detail: int,
     refresh_key: str,
+    plain_language: bool = True,
 ) -> tuple[PreparedStory | None, float]:
     candidates = item.article_candidates or (item.story,)
     for candidate in candidates[:MAX_ARTICLE_CANDIDATES]:
         evidence = fetch_article_evidence(candidate.link, candidate.title)
         if not evidence:
             continue
-        attempt = smart_summarize(item.story, evidence, detail, refresh_key)
+        attempt = smart_summarize(
+            item.story,
+            evidence,
+            detail,
+            refresh_key,
+            plain_language,
+        )
         if not attempt.card:
             return None, attempt.ai_cost
         return (
@@ -3867,6 +3920,7 @@ def main() -> None:
         ["World", "US", "Politics", "Business", "Tech", "Climate", "Health"],
     )
     st.session_state.setdefault("detail", 3)
+    st.session_state.setdefault("plain_language_summaries", True)
     st.session_state.setdefault("include_social", False)
     st.session_state.setdefault("include_aggregators", True)
     st.session_state.setdefault("include_gdelt", False)
@@ -3881,6 +3935,7 @@ def main() -> None:
 
     selected_topics = st.session_state.selected_topics
     detail = st.session_state.detail
+    plain_language = bool(st.session_state.plain_language_summaries)
     include_social = st.session_state.include_social
     include_aggregators = st.session_state.include_aggregators
     include_gdelt = st.session_state.include_gdelt
@@ -3913,7 +3968,7 @@ def main() -> None:
     st.session_state.generation_issues = []
     with story_stream:
         for ranked_story in batch:
-            render_headline_story(ranked_story, detail)
+            render_headline_story(ranked_story, detail, plain_language)
         if batch and st.button(
             "Load 20 more",
             key="load-more-headlines",
@@ -3953,6 +4008,14 @@ def main() -> None:
         col1, col2 = st.columns(2)
         with col1:
             st.slider("Summary depth", min_value=1, max_value=5, step=1, key="detail")
+            st.toggle(
+                "Plain-language summaries",
+                key="plain_language_summaries",
+                help=(
+                    "On writes about 20% more simply, using shorter sentences, familiar words, "
+                    "and quick explanations for necessary jargon."
+                ),
+            )
         with col2:
             st.toggle("Reddit and Hacker News", key="include_social")
             st.toggle(
