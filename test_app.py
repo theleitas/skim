@@ -117,6 +117,40 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertIn("county health officials", extracted)
         self.assertNotIn("Subscribe now", extracted)
 
+    def test_feed_combines_article_and_media_descriptions_for_single_source_evidence(self) -> None:
+        xml = b"""
+        <rss xmlns:media="http://search.yahoo.com/mrss/">
+          <channel>
+            <item>
+              <title>Investigation finds historical abuse at Michigan arts school</title>
+              <link>https://example.com/interlochen-investigation</link>
+              <description>
+                A law firm hired by Interlochen to examine alumni complaints fielded dozens
+                of disturbing accounts, primarily from decades ago.
+              </description>
+              <media:description>
+                After an alumnus complained, the school opened an investigation into allegations
+                that teachers and other staff had acted inappropriately with students.
+              </media:description>
+            </item>
+          </channel>
+        </rss>
+        """
+        source = app.NewsSource(
+            "NYT Top Stories",
+            "https://example.com/feed",
+            "Major News",
+            ("World",),
+        )
+
+        stories, error = app.parse_source_feed(source, xml)
+
+        self.assertIsNone(error)
+        self.assertEqual(len(stories), 1)
+        self.assertIn("dozens of disturbing accounts", stories[0].summary_text)
+        self.assertIn("teachers and other staff", stories[0].summary_text)
+        self.assertIsNotNone(app.feed_story_evidence(stories[0]))
+
     def test_ranked_cluster_keeps_direct_articles_as_briefing_candidates(self) -> None:
         google_story = replace(
             self.news_story(
@@ -187,6 +221,98 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertEqual(prepared.article_story, readable_story)
         self.assertEqual(cost, 0.02)
         self.assertEqual(fetch.call_count, 2)
+
+    def test_briefing_uses_one_publishers_feed_text_when_page_is_blocked(self) -> None:
+        feed_story = replace(
+            self.news_story(
+                "single-feed-source",
+                "Investigation finds historical abuse at Michigan arts school",
+                "NYT Top Stories",
+            ),
+            summary_text=(
+                "A law firm hired by the school to examine alumni complaints fielded dozens "
+                "of disturbing accounts, primarily from decades ago. After an alumnus complained, "
+                "the school opened an investigation into allegations that teachers and other staff "
+                "had acted inappropriately with students."
+            ),
+        )
+        ranked = app.RankedStory(
+            story=feed_story,
+            cluster_key="single-feed-source",
+            references=1,
+            topic_story_count=1,
+            score=1.0,
+            article_candidates=(feed_story,),
+        )
+
+        with (
+            patch.object(app, "fetch_article_evidence", return_value=None),
+            patch.object(
+                app,
+                "smart_summarize",
+                return_value=app.SummaryAttempt(card=self.good_card(), ai_cost=0.02),
+            ) as summarize,
+        ):
+            prepared, cost = app.prepare_ranked_story(ranked, detail=3, refresh_key="test")
+
+        self.assertIsNotNone(prepared)
+        self.assertEqual(prepared.article_story, feed_story)
+        self.assertGreaterEqual(prepared.evidence.word_count, app.MIN_FEED_EVIDENCE_WORDS)
+        self.assertEqual(cost, 0.02)
+        self.assertEqual(summarize.call_args.args[-1], feed_story)
+
+    def test_briefing_continues_after_first_ai_draft_fails_quality(self) -> None:
+        first_story = self.news_story(
+            "first-draft-fails",
+            "Coalition government collapses after confidence vote",
+            "First Publisher",
+        )
+        second_story = self.news_story(
+            "second-draft-works",
+            "Government coalition collapses following confidence vote",
+            "Second Publisher",
+        )
+        ranked = app.RankedStory(
+            story=first_story,
+            cluster_key="coalition-collapse",
+            references=2,
+            topic_story_count=2,
+            score=1.0,
+            article_candidates=(first_story, second_story),
+        )
+        evidence_text = " ".join(
+            "The coalition lost a confidence vote and ministers confirmed the transition."
+            for _ in range(18)
+        )
+        first_evidence = app.ArticleEvidence(
+            url=first_story.link,
+            title=first_story.title,
+            text=evidence_text,
+            word_count=len(evidence_text.split()),
+        )
+        second_evidence = replace(first_evidence, url=second_story.link, title=second_story.title)
+
+        with (
+            patch.object(
+                app,
+                "fetch_article_evidence",
+                side_effect=[first_evidence, second_evidence],
+            ),
+            patch.object(
+                app,
+                "smart_summarize",
+                side_effect=[
+                    app.SummaryAttempt(card=None, ai_cost=0.01),
+                    app.SummaryAttempt(card=self.good_card(), ai_cost=0.02),
+                ],
+            ) as summarize,
+        ):
+            prepared, cost = app.prepare_ranked_story(ranked, detail=3, refresh_key="test")
+
+        self.assertIsNotNone(prepared)
+        self.assertEqual(prepared.article_story, second_story)
+        self.assertAlmostEqual(cost, 0.03)
+        self.assertEqual(summarize.call_count, 2)
 
     def test_card_validator_rejects_screenshot_failure_mode(self) -> None:
         bad_card = {

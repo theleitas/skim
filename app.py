@@ -30,6 +30,8 @@ ARTICLE_MAX_BYTES = 3_000_000
 ARTICLE_MAX_WORDS = 3_000
 MIN_ARTICLE_WORDS = 120
 MIN_ARTICLE_SENTENCES = 3
+MIN_FEED_EVIDENCE_WORDS = 35
+MIN_FEED_EVIDENCE_SENTENCES = 2
 MAX_ARTICLE_CANDIDATES = 5
 MAX_BASE_CANDIDATES = 40
 MAX_KEYWORD_CANDIDATES = 10
@@ -50,7 +52,7 @@ GDELT_QUERY = (
 )
 OPENAI_SUMMARY_MODEL = "gpt-5.6-terra"
 OPENAI_DEEP_MODEL = "gpt-5.6-terra"
-AI_SUMMARY_PROMPT_VERSION = "grounded-article-v2-plain-language"
+AI_SUMMARY_PROMPT_VERSION = "grounded-article-v3-single-source-fallback"
 GEMINI_SUMMARY_MODEL = "gemini-2.5-flash"
 GEMINI_DEEP_MODEL = "gemini-2.5-pro"
 GROQ_SUMMARY_MODEL = "llama-3.3-70b-versatile"
@@ -1287,6 +1289,22 @@ def child_raw_text(parent: ET.Element, names: Iterable[str]) -> str:
     return ""
 
 
+def feed_entry_summary(parent: ET.Element) -> str:
+    summary_tags = {"description", "summary", "content", "encoded"}
+    parts: list[str] = []
+    seen_parts: set[str] = set()
+    for child in parent:
+        if local_name(child.tag) not in summary_tags or not child.text:
+            continue
+        part = clean_text(child.text)
+        normalized = normalized_story_text(part)
+        if not part or not normalized or normalized in seen_parts:
+            continue
+        parts.append(part)
+        seen_parts.add(normalized)
+    return sanitize_article_text(" ".join(parts), max_words=240)
+
+
 def child_link(parent: ET.Element) -> str:
     for child in parent:
         if local_name(child.tag) == "link":
@@ -1513,6 +1531,7 @@ def parse_source_feed(source: NewsSource, xml_bytes: bytes) -> tuple[list[Story]
         title = child_text(entry, ("title",))
         link = child_link(entry)
         summary_raw = child_raw_text(entry, ("description", "summary", "content", "encoded"))
+        combined_summary = feed_entry_summary(entry)
         image_html = " ".join(
             child.text or ""
             for child in entry
@@ -1530,7 +1549,7 @@ def parse_source_feed(source: NewsSource, xml_bytes: bytes) -> tuple[list[Story]
                 publisher_name = source_name_from_domain(direct_host)
                 publisher = f"{publisher_name} via Drudge"
         google_news_item = is_google_news_url(link)
-        summary = "" if google_news_item or drudge_item else clean_text(summary_raw)
+        summary = "" if google_news_item or drudge_item else combined_summary
         date_text = child_text(entry, ("pubDate", "published", "updated", "date"))
         if not title or not link:
             continue
@@ -2532,6 +2551,23 @@ def article_evidence_is_sufficient(evidence: ArticleEvidence | None) -> bool:
     return required_overlap == 0 or len(title_terms.intersection(body_terms)) >= required_overlap
 
 
+def feed_story_evidence(story: Story) -> ArticleEvidence | None:
+    feed_text = sanitize_article_text(story.summary_text, max_words=240)
+    if not has_enough_reported_material(story.title, feed_text):
+        return None
+    word_count = len(feed_text.split())
+    if word_count < MIN_FEED_EVIDENCE_WORDS:
+        return None
+    if sentence_count(feed_text) < MIN_FEED_EVIDENCE_SENTENCES:
+        return None
+    return ArticleEvidence(
+        url=story.link,
+        title=clean_headline_source(story.title),
+        text=feed_text,
+        word_count=word_count,
+    )
+
+
 def story_haystack(story: Story) -> str:
     return f" {story.title} {story.summary_text} ".lower()
 
@@ -3284,16 +3320,18 @@ def smart_summarize(
     detail: int,
     refresh_key: str,
     plain_language: bool = True,
+    article_story: Story | None = None,
 ) -> SummaryAttempt:
     provider = configured_ai_provider()
     if not provider:
         return SummaryAttempt(card=None, ai_cost=0.0)
 
-    topics = infer_topics(story)
+    source_story = article_story or story
+    topics = tuple(dict.fromkeys((*infer_topics(story), *infer_topics(source_story))))
     fallback_links = story_learning_links(story, topics)
     model = ai_model(provider, deep=False)
-    rss_summary = sanitize_article_text(story.summary_text, max_words=180)
-    if not has_enough_reported_material(story.title, rss_summary):
+    rss_summary = sanitize_article_text(source_story.summary_text, max_words=180)
+    if not has_enough_reported_material(source_story.title, rss_summary):
         rss_summary = ""
     try:
         ai_result = ai_summary_cached(
@@ -3302,9 +3340,9 @@ def smart_summarize(
             AI_SUMMARY_PROMPT_VERSION,
             refresh_key,
             story.id,
-            story.title,
-            story.source,
-            story.group,
+            source_story.title,
+            source_story.source,
+            source_story.group,
             rss_summary,
             evidence.url,
             evidence.text,
@@ -3338,8 +3376,8 @@ def smart_summarize(
                 AI_SUMMARY_PROMPT_VERSION,
                 refresh_key,
                 story.id,
-                story.title,
-                story.source,
+                source_story.title,
+                source_story.source,
                 evidence.text,
                 json.dumps(card, ensure_ascii=True, sort_keys=True),
                 errors,
@@ -3352,7 +3390,7 @@ def smart_summarize(
             repair_cost = result_openai_cost(repaired, model)
             if repair_cost is None:
                 estimated_repair_input = estimated_token_count(
-                    story.title,
+                    source_story.title,
                     evidence.text,
                     json.dumps(card, ensure_ascii=True, sort_keys=True),
                     "; ".join(errors),
@@ -3825,7 +3863,8 @@ def render_headline_story(
         if is_expanded:
             readability_key = "plain" if plain_language else "standard"
             summary_key = (
-                f"headline-{st.session_state.batch_refresh_id}-{story.id}-{readability_key}"
+                f"headline-{AI_SUMMARY_PROMPT_VERSION}-{st.session_state.batch_refresh_id}-"
+                f"{story.id}-{readability_key}"
             )
             provider = configured_ai_provider()
             summary_model = ai_model(provider, deep=False) if provider else "not configured"
@@ -3920,8 +3959,8 @@ def render_headline_story(
                 st.error("Skim could not generate this brief. Open Feed notes below for the exact reason.")
             else:
                 st.warning(
-                    "Skim could not access enough reporting from the available publisher pages "
-                    "to build a grounded brief."
+                    "Skim could not retrieve enough article or publisher-feed text to build a "
+                    "grounded brief."
                 )
 
         if st.button(
@@ -4141,8 +4180,11 @@ def prepare_ranked_story(
     plain_language: bool = True,
 ) -> tuple[PreparedStory | None, float]:
     candidates = item.article_candidates or (item.story,)
+    total_ai_cost = 0.0
     for candidate in candidates[:MAX_ARTICLE_CANDIDATES]:
         evidence = fetch_article_evidence(candidate.link, candidate.title)
+        if not evidence:
+            evidence = feed_story_evidence(candidate)
         if not evidence:
             continue
         attempt = smart_summarize(
@@ -4151,9 +4193,11 @@ def prepare_ranked_story(
             detail,
             refresh_key,
             plain_language,
+            candidate,
         )
+        total_ai_cost += attempt.ai_cost
         if not attempt.card:
-            return None, attempt.ai_cost
+            continue
         return (
             PreparedStory(
                 ranked_story=item,
@@ -4161,9 +4205,9 @@ def prepare_ranked_story(
                 card=attempt.card,
                 article_story=candidate,
             ),
-            attempt.ai_cost,
+            total_ai_cost,
         )
-    return None, 0.0
+    return None, total_ai_cost
 
 
 def append_prepared_story(
