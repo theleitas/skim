@@ -3459,7 +3459,11 @@ def render_headline_story(ranked_story: RankedStory, detail: int) -> None:
         attempted_cost = 0.0
         if is_expanded:
             summary_key = f"headline-{st.session_state.batch_refresh_id}-{story.id}"
-            with st.spinner("Using AI to extract the key facts and context..."):
+            provider = configured_ai_provider()
+            summary_model = ai_model(provider, deep=False) if provider else "not configured"
+            with st.spinner(
+                f"Using AI ({summary_model}) to extract and summarize this story..."
+            ):
                 prepared, attempted_cost = prepare_ranked_story(ranked_story, detail, summary_key)
             record_batch_ai_cost(
                 [prepared] if prepared else [],
