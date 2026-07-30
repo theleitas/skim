@@ -6,6 +6,7 @@ import json
 import os
 import re
 import textwrap
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,9 +16,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 APP_NAME = "Skim"
@@ -72,7 +75,12 @@ AI_COST_QUERY_TOTAL_ARTICLES = "aiCostArticles"
 AI_COST_QUERY_LATEST_ARTICLES = "aiCostLatestArticles"
 AI_COST_QUERY_LAST_BATCH = "aiCostBatch"
 AI_COST_QUERY_EVENTS = "aiCostEvents"
+AI_COST_QUERY_UPDATED = "aiCostUpdated"
 AI_COST_MAX_RECORDED_EVENTS = 128
+AI_COST_LEDGER_PATH = Path(__file__).with_name(".skim_ai_cost_ledger.json")
+AI_COST_BROWSER_STORAGE_KEY = "skim-ai-cost-ledger-v2"
+AI_COST_LEDGER_LOCK = threading.Lock()
+ADMIN_PASSWORD = "0102"
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -599,62 +607,6 @@ def page_style() -> None:
                 padding: 0;
             }
 
-            .skim-focus-mode {
-                position: fixed;
-                inset: 0;
-                z-index: 2147483000;
-                background: #000000;
-                animation: skim-focus-blackout 160ms ease-out both;
-            }
-
-            .skim-working-card {
-                display: none;
-            }
-
-            .stApp:has(.skim-focus-mode)
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.skim-working-card) {
-                position: fixed;
-                top: 50%;
-                left: 50%;
-                z-index: 2147483001;
-                width: min(820px, calc(100vw - 2rem));
-                margin: 0 !important;
-                transform: translate(-50%, -50%);
-                animation: skim-working-card-in 220ms ease-out both;
-            }
-
-            .stApp:has(.skim-focus-mode)
-            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.skim-working-card)
-            > div[data-testid="stVerticalBlock"] {
-                background: #050607;
-                border-color: color-mix(
-                    in srgb,
-                    var(--skim-category, var(--skim-accent)) 68%,
-                    #343a42
-                );
-                box-shadow: 0 0 26px color-mix(
-                    in srgb,
-                    var(--skim-category, var(--skim-accent)) 24%,
-                    transparent
-                );
-            }
-
-            @keyframes skim-focus-blackout {
-                from { opacity: 0; }
-                to { opacity: 1; }
-            }
-
-            @keyframes skim-working-card-in {
-                from {
-                    opacity: 0;
-                    transform: translate(-50%, calc(-50% + 8px));
-                }
-                to {
-                    opacity: 1;
-                    transform: translate(-50%, -50%);
-                }
-            }
-
             .st-key-headline_feed > [data-testid="stLayoutWrapper"] > div[data-testid="stVerticalBlock"] {
                 position: relative;
                 background: #050607;
@@ -678,8 +630,15 @@ def page_style() -> None:
             }
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.story-meta)
+            > div[data-testid="stVerticalBlock"] {
+                padding-top: 0.4rem;
+                padding-bottom: 0.45rem;
+            }
+
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.story-meta)
             > div[data-testid="stVerticalBlock"]::before {
-                top: 0.782rem;
+                top: 0.4rem;
+                bottom: 0.45rem;
             }
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.category-world) {
@@ -868,9 +827,20 @@ def page_style() -> None:
                 font-size: 0.72rem;
                 text-transform: uppercase;
                 letter-spacing: 0;
-                margin-bottom: 0.45rem;
+                margin: 0 0 0.42rem;
                 white-space: nowrap;
                 overflow: hidden;
+            }
+
+            .story-meta > span {
+                flex: 0 0 auto;
+            }
+
+            .story-meta .story-meta-outlets {
+                flex: 0 1 auto;
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: clip;
             }
 
             .story-title {
@@ -899,22 +869,9 @@ def page_style() -> None:
                 border-radius: 12px;
             }
 
-            .story-source {
-                color: #9d968d;
-                font-size: 0.76rem;
-                font-style: italic;
-                line-height: 1.35;
-                margin-top: 0.75rem;
-                margin-bottom: 0.45rem;
-            }
-
-            .headline-expand-row {
-                margin: -0.1rem 0 0.45rem;
-            }
-
             .headline-brief-divider {
                 border-top: 1px solid #332f29;
-                margin: 0.9rem 0 0.85rem;
+                margin: 0.7rem 0 0.72rem;
             }
 
             .summary-grid {
@@ -957,6 +914,82 @@ def page_style() -> None:
                 border-radius: 8px;
                 padding: 0.85rem 0.9rem;
                 margin-bottom: 0.95rem;
+            }
+
+            .ai-working-box {
+                display: flex;
+                align-items: center;
+                gap: 0.72rem;
+                min-height: 3.25rem;
+                background: #080909;
+                border: 1px solid color-mix(
+                    in srgb,
+                    var(--skim-category, var(--skim-accent)) 58%,
+                    #30353a
+                );
+                border-radius: 7px;
+                box-shadow: 0 0 16px color-mix(
+                    in srgb,
+                    var(--skim-category, var(--skim-accent)) 22%,
+                    transparent
+                );
+                color: #eeeae3;
+                margin: 0.25rem 0 0.85rem;
+                padding: 0.62rem 0.75rem;
+            }
+
+            .ai-working-icon {
+                position: relative;
+                flex: 0 0 1.75rem;
+                width: 1.75rem;
+                height: 1.75rem;
+                border: 1px solid var(--skim-category, var(--skim-accent));
+                border-radius: 50%;
+                box-shadow: 0 0 10px color-mix(
+                    in srgb,
+                    var(--skim-category, var(--skim-accent)) 46%,
+                    transparent
+                );
+                animation: skim-working-orbit 1.5s linear infinite;
+            }
+
+            .ai-working-icon span {
+                position: absolute;
+                inset: 0;
+                display: grid;
+                place-items: center;
+                font-size: 0.92rem;
+                line-height: 1;
+            }
+
+            .ai-working-newspaper {
+                animation: skim-working-newspaper 2.4s ease-in-out infinite;
+            }
+
+            .ai-working-lightbulb {
+                animation: skim-working-lightbulb 2.4s ease-in-out infinite;
+            }
+
+            .ai-working-copy {
+                font-size: 0.88rem;
+                font-weight: 600;
+                line-height: 1.35;
+            }
+
+            @keyframes skim-working-orbit {
+                to { transform: rotate(360deg); }
+            }
+
+            @keyframes skim-working-newspaper {
+                0%, 42% { opacity: 1; transform: scale(1); }
+                50%, 92% { opacity: 0; transform: scale(0.55); }
+                100% { opacity: 1; transform: scale(1); }
+            }
+
+            @keyframes skim-working-lightbulb {
+                0%, 42% { opacity: 0; transform: scale(0.55); }
+                50%, 92% { opacity: 1; transform: scale(1); }
+                100% { opacity: 0; transform: scale(0.55); }
             }
 
             .deep-summary-field {
@@ -1071,9 +1104,9 @@ def page_style() -> None:
             .st-key-headline_feed [class*="st-key-story_actions_"]
             [data-testid="stHorizontalBlock"] {
                 display: grid !important;
-                grid-template-columns: repeat(4, minmax(0, 1fr));
+                grid-template-columns: repeat(3, minmax(0, 1fr));
                 gap: 0.34rem !important;
-                margin-top: -0.18rem;
+                margin-top: 0.15rem;
             }
 
             .st-key-headline_feed [class*="st-key-story_actions_"]
@@ -1097,11 +1130,69 @@ def page_style() -> None:
             }
 
             .st-key-headline_feed [class*="st-key-close_brief_"] {
-                margin-top: 0.52rem;
+                margin-top: 0.34rem;
             }
 
             .st-key-headline_feed [class*="st-key-close_brief_"] button {
                 width: 100%;
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"] {
+                background: #0b0c0d;
+                border: 1px solid #30353a;
+                border-radius: 8px;
+                margin: 0 0 0.85rem;
+                padding: 0.7rem 0.75rem 0.1rem;
+            }
+
+            .story-question-heading {
+                color: var(--skim-category, var(--skim-accent));
+                font-size: 0.72rem;
+                font-weight: 750;
+                margin-bottom: 0.42rem;
+                text-transform: uppercase;
+            }
+
+            .story-question {
+                color: #f0ede7;
+                font-size: 0.82rem;
+                font-weight: 700;
+                margin: 0.3rem 0 0.16rem;
+            }
+
+            .story-answer {
+                color: #cfcac1;
+                border-bottom: 1px solid #292d31;
+                font-size: 0.86rem;
+                line-height: 1.46;
+                margin-bottom: 0.55rem;
+                padding-bottom: 0.55rem;
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"] textarea {
+                min-height: 5rem !important;
+                background: #020303;
+                border-color: color-mix(
+                    in srgb,
+                    var(--skim-category, var(--skim-accent)) 58%,
+                    #454545
+                );
+                color: #f0f0f0;
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"] [data-testid="stForm"] {
+                border: 0;
+                padding: 0;
+            }
+
+            .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.st-key-load-more-headlines) {
+                margin-bottom: 1.35rem;
+            }
+
+            .admin-lock-copy {
+                color: var(--skim-muted);
+                font-size: 0.82rem;
+                margin-bottom: 0.55rem;
             }
 
             .story-ai-cost {
@@ -1149,7 +1240,8 @@ def page_style() -> None:
             }
 
             .stButton > button,
-            .stLinkButton > a {
+            .stLinkButton > a,
+            .stFormSubmitButton > button {
                 background: #020303;
                 border: 1px solid color-mix(
                     in srgb,
@@ -1174,7 +1266,8 @@ def page_style() -> None:
             }
 
             .stButton > button:hover,
-            .stLinkButton > a:hover {
+            .stLinkButton > a:hover,
+            .stFormSubmitButton > button:hover {
                 background: #080909;
                 border-color: var(--skim-category, var(--skim-accent));
                 color: var(--skim-category, var(--skim-accent));
@@ -1210,6 +1303,7 @@ def page_style() -> None:
                 }
 
                 .story-meta {
+                    gap: 0.24rem;
                     font-size: 0.61rem;
                 }
 
@@ -1225,12 +1319,6 @@ def page_style() -> None:
                     white-space: normal !important;
                     overflow: hidden;
                     text-overflow: clip !important;
-                }
-
-                .st-key-headline_feed [class*="st-key-story_actions_"]
-                [data-testid="stHorizontalBlock"] {
-                    grid-template-columns: repeat(2, minmax(0, 1fr));
-                    gap: 0.34rem !important;
                 }
 
             }
@@ -1808,36 +1896,199 @@ def persist_keywords_to_query_params() -> None:
 def initialize_ai_cost_state() -> None:
     if st.session_state.get("ai_cost_state_initialized", False):
         return
-    st.session_state.ai_cost_total_micros = query_param_nonnegative_int(AI_COST_QUERY_TOTAL)
-    st.session_state.ai_cost_latest_micros = query_param_nonnegative_int(AI_COST_QUERY_LATEST)
-    st.session_state.ai_cost_total_articles = query_param_nonnegative_int(AI_COST_QUERY_TOTAL_ARTICLES)
-    st.session_state.ai_cost_latest_articles = query_param_nonnegative_int(AI_COST_QUERY_LATEST_ARTICLES)
-    event_tokens = [
-        token
-        for token in query_param_text(AI_COST_QUERY_EVENTS).split(",")
-        if re.fullmatch(r"[a-f0-9]{16}", token)
-    ]
+    file_ledger = read_ai_cost_ledger()
+    query_has_ledger = AI_COST_QUERY_TOTAL in st.query_params
+    query_ledger = {
+        "total_micros": query_param_nonnegative_int(AI_COST_QUERY_TOTAL),
+        "latest_micros": query_param_nonnegative_int(AI_COST_QUERY_LATEST),
+        "total_articles": query_param_nonnegative_int(AI_COST_QUERY_TOTAL_ARTICLES),
+        "latest_articles": query_param_nonnegative_int(AI_COST_QUERY_LATEST_ARTICLES),
+        "updated_at": query_param_nonnegative_int(AI_COST_QUERY_UPDATED),
+        "events": [
+            token
+            for token in query_param_text(AI_COST_QUERY_EVENTS).split(",")
+            if re.fullmatch(r"[a-f0-9]{16}", token)
+        ],
+    }
     legacy_batch_id = query_param_text(AI_COST_QUERY_LAST_BATCH)
     if legacy_batch_id:
-        event_tokens.append(ai_cost_event_token(legacy_batch_id))
-    st.session_state.ai_cost_recorded_events = list(dict.fromkeys(event_tokens))[
+        query_ledger["events"].append(ai_cost_event_token(legacy_batch_id))
+
+    query_is_newer = query_ledger["updated_at"] > file_ledger["updated_at"]
+    query_is_migration = (
+        query_ledger["updated_at"] == file_ledger["updated_at"]
+        and query_ledger["total_micros"] >= file_ledger["total_micros"]
+    )
+    if query_has_ledger and (query_is_newer or query_is_migration):
+        ledger = query_ledger
+    else:
+        ledger = file_ledger
+
+    st.session_state.ai_cost_total_micros = ledger["total_micros"]
+    st.session_state.ai_cost_latest_micros = ledger["latest_micros"]
+    st.session_state.ai_cost_total_articles = ledger["total_articles"]
+    st.session_state.ai_cost_latest_articles = ledger["latest_articles"]
+    st.session_state.ai_cost_updated_at = ledger["updated_at"]
+    st.session_state.ai_cost_recorded_events = list(dict.fromkeys(ledger["events"]))[
         -AI_COST_MAX_RECORDED_EVENTS:
     ]
     st.session_state.ai_cost_state_initialized = True
+    persist_ai_cost_state()
+
+
+def empty_ai_cost_ledger() -> dict[str, object]:
+    return {
+        "total_micros": 0,
+        "latest_micros": 0,
+        "total_articles": 0,
+        "latest_articles": 0,
+        "updated_at": 0,
+        "events": [],
+    }
+
+
+def normalize_ai_cost_ledger(raw: object) -> dict[str, object]:
+    ledger = empty_ai_cost_ledger()
+    if not isinstance(raw, dict):
+        return ledger
+    for key in (
+        "total_micros",
+        "latest_micros",
+        "total_articles",
+        "latest_articles",
+        "updated_at",
+    ):
+        try:
+            ledger[key] = max(0, int(raw.get(key, 0)))
+        except (TypeError, ValueError):
+            ledger[key] = 0
+    events = raw.get("events", [])
+    if isinstance(events, list):
+        ledger["events"] = [
+            str(token)
+            for token in events
+            if re.fullmatch(r"[a-f0-9]{16}", str(token))
+        ][-AI_COST_MAX_RECORDED_EVENTS:]
+    return ledger
+
+
+def read_ai_cost_ledger() -> dict[str, object]:
+    try:
+        with AI_COST_LEDGER_LOCK:
+            raw = json.loads(AI_COST_LEDGER_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return empty_ai_cost_ledger()
+    return normalize_ai_cost_ledger(raw)
+
+
+def current_ai_cost_ledger() -> dict[str, object]:
+    return {
+        "total_micros": int(st.session_state.get("ai_cost_total_micros", 0)),
+        "latest_micros": int(st.session_state.get("ai_cost_latest_micros", 0)),
+        "total_articles": int(st.session_state.get("ai_cost_total_articles", 0)),
+        "latest_articles": int(st.session_state.get("ai_cost_latest_articles", 0)),
+        "updated_at": int(st.session_state.get("ai_cost_updated_at", 0)),
+        "events": list(st.session_state.get("ai_cost_recorded_events", []))[
+            -AI_COST_MAX_RECORDED_EVENTS:
+        ],
+    }
+
+
+def write_ai_cost_ledger(ledger: dict[str, object]) -> None:
+    temporary_path = AI_COST_LEDGER_PATH.with_suffix(".tmp")
+    try:
+        with AI_COST_LEDGER_LOCK:
+            temporary_path.write_text(
+                json.dumps(normalize_ai_cost_ledger(ledger), separators=(",", ":")),
+                encoding="utf-8",
+            )
+            os.replace(temporary_path, AI_COST_LEDGER_PATH)
+    except OSError:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def persist_ai_cost_state() -> None:
+    ledger = current_ai_cost_ledger()
+    write_ai_cost_ledger(ledger)
     values = {
-        AI_COST_QUERY_TOTAL: st.session_state.ai_cost_total_micros,
-        AI_COST_QUERY_LATEST: st.session_state.ai_cost_latest_micros,
-        AI_COST_QUERY_TOTAL_ARTICLES: st.session_state.ai_cost_total_articles,
-        AI_COST_QUERY_LATEST_ARTICLES: st.session_state.ai_cost_latest_articles,
-        AI_COST_QUERY_EVENTS: ",".join(st.session_state.ai_cost_recorded_events),
+        AI_COST_QUERY_TOTAL: ledger["total_micros"],
+        AI_COST_QUERY_LATEST: ledger["latest_micros"],
+        AI_COST_QUERY_TOTAL_ARTICLES: ledger["total_articles"],
+        AI_COST_QUERY_LATEST_ARTICLES: ledger["latest_articles"],
+        AI_COST_QUERY_EVENTS: ",".join(ledger["events"]),
+        AI_COST_QUERY_UPDATED: ledger["updated_at"],
     }
     for key, value in values.items():
         st.query_params[key] = str(value)
     if AI_COST_QUERY_LAST_BATCH in st.query_params:
         del st.query_params[AI_COST_QUERY_LAST_BATCH]
+
+
+def sync_ai_cost_browser_storage(query_had_ledger: bool) -> None:
+    ledger_json = json.dumps(current_ai_cost_ledger(), separators=(",", ":"))
+    query_names_json = json.dumps(
+        {
+            "total_micros": AI_COST_QUERY_TOTAL,
+            "latest_micros": AI_COST_QUERY_LATEST,
+            "total_articles": AI_COST_QUERY_TOTAL_ARTICLES,
+            "latest_articles": AI_COST_QUERY_LATEST_ARTICLES,
+            "events": AI_COST_QUERY_EVENTS,
+            "updated_at": AI_COST_QUERY_UPDATED,
+        }
+    )
+    components.html(
+        f"""
+        <script>
+        (() => {{
+          try {{
+            const storageKey = {json.dumps(AI_COST_BROWSER_STORAGE_KEY)};
+            const serverLedger = {ledger_json};
+            const names = {query_names_json};
+            const stored = JSON.parse(window.parent.localStorage.getItem(storageKey) || "null");
+            const storedTotal = Number(stored && stored.total_micros) || 0;
+            const serverTotal = Number(serverLedger.total_micros) || 0;
+            const storedUpdated = Number(stored && stored.updated_at) || 0;
+            const serverUpdated = Number(serverLedger.updated_at) || 0;
+            const storedIsNewer = storedUpdated > serverUpdated
+              || (storedUpdated === serverUpdated && storedTotal > serverTotal);
+            if (!{str(query_had_ledger).lower()} && storedIsNewer) {{
+              const url = new URL(window.parent.location.href);
+              for (const [field, queryName] of Object.entries(names)) {{
+                const value = field === "events"
+                  ? (Array.isArray(stored[field]) ? stored[field].join(",") : "")
+                  : String(Math.max(0, Number(stored[field]) || 0));
+                url.searchParams.set(queryName, value);
+              }}
+              window.parent.location.replace(url.toString());
+              return;
+            }}
+            window.parent.localStorage.setItem(storageKey, JSON.stringify(serverLedger));
+          }} catch (error) {{
+            // The app-file ledger remains the source of truth if browser storage is unavailable.
+          }}
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
+def set_ai_cost_total(total_dollars: float, reset_history: bool = False) -> None:
+    st.session_state.ai_cost_total_micros = max(
+        0,
+        round(float(total_dollars) * AI_COST_SCALE),
+    )
+    if reset_history:
+        st.session_state.ai_cost_latest_micros = 0
+        st.session_state.ai_cost_total_articles = 0
+        st.session_state.ai_cost_latest_articles = 0
+        st.session_state.ai_cost_recorded_events = []
+    st.session_state.ai_cost_updated_at = round(datetime.now(timezone.utc).timestamp() * 1000)
+    persist_ai_cost_state()
 
 
 def complete_story_refresh() -> None:
@@ -1848,18 +2099,43 @@ def complete_story_refresh() -> None:
     st.session_state.last_settings = None
     st.session_state.deep_analyses = {}
     st.session_state.research_briefs = {}
+    st.session_state.story_questions = {}
     st.session_state.prepared_summary_results = {}
     st.session_state.extracting_story_id = ""
+    st.session_state.deep_analysis_loading_story_id = ""
+    st.session_state.pinned_story_id = ""
     st.session_state.expanded_story_ids = set()
+    st.session_state.scroll_to_top_pending = True
 
 
 def load_next_story_batch() -> None:
     st.session_state.current_cluster_keys = []
     st.session_state.deep_analyses = {}
     st.session_state.research_briefs = {}
+    st.session_state.story_questions = {}
     st.session_state.prepared_summary_results = {}
     st.session_state.extracting_story_id = ""
+    st.session_state.deep_analysis_loading_story_id = ""
+    st.session_state.pinned_story_id = ""
     st.session_state.expanded_story_ids = set()
+    st.session_state.scroll_to_top_pending = True
+
+
+def scroll_page_to_top() -> None:
+    components.html(
+        """
+        <script>
+        const scroller = window.parent.document.querySelector("section.stMain");
+        if (scroller) {
+          scroller.scrollTo({top: 0, left: 0, behavior: "instant"});
+        } else {
+          window.parent.scrollTo({top: 0, left: 0, behavior: "instant"});
+        }
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 
 def keyword_match_count(story: Story, keywords: tuple[str, ...]) -> int:
@@ -2293,15 +2569,11 @@ def reference_links(story: Story, topics: tuple[str, ...]) -> tuple[tuple[str, s
 
 
 def story_learning_links(story: Story, topics: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
-    links = list(reference_links(story, topics))
-    for fallback in (google_news_search_link(story), source_site_link(story)):
-        if fallback and len(links) < 2 and fallback[1] not in {url for _, url in links}:
-            links.append(fallback)
-    while len(links) < 2:
-        links.append(("Related coverage", "https://news.google.com/topstories?hl=en-US&gl=US&ceid=US:en"))
-
+    reference = next(iter(reference_links(story, topics)), google_news_search_link(story))
     wiki_link = wikipedia_links(story, topics)[0]
-    return tuple([*links[:2], wiki_link])
+    if reference[1] == wiki_link[1]:
+        reference = google_news_search_link(story)
+    return reference, wiki_link
 
 
 ARTICLE_BOILERPLATE_MARKERS = (
@@ -2770,6 +3042,15 @@ RESEARCH_BRIEF_RESPONSE_SCHEMA = {
     "additionalProperties": False,
 }
 
+STORY_QUESTION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+    },
+    "required": ["answer"],
+    "additionalProperties": False,
+}
+
 
 def post_json(url: str, headers: dict[str, str], payload: dict) -> dict:
     request = urllib.request.Request(
@@ -3162,6 +3443,63 @@ def ai_research_brief_cached(
     )
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def ai_story_question_cached(
+    provider: str,
+    model: str,
+    story_id: str,
+    title: str,
+    source: str,
+    article_text: str,
+    summary_text: str,
+    deep_context: str,
+    question: str,
+) -> dict:
+    prompt = textwrap.dedent(
+        f"""
+        NEWS EVENT: {clean_headline_source(title)}
+        PUBLISHER: {source}
+        READER QUESTION: {question}
+
+        <SKIM_BRIEF>
+        {summary_text}
+        </SKIM_BRIEF>
+
+        <DEEP_ANALYSIS>
+        {deep_context or "Not requested."}
+        </DEEP_ANALYSIS>
+
+        <ARTICLE_BODY>
+        {article_text}
+        </ARTICLE_BODY>
+        """
+    ).strip()
+    instructions = textwrap.dedent(
+        f"""
+        Answer the reader's question directly in 3-4 cohesive sentences. Use the supplied source
+        material for current-event facts and reliable established knowledge for explanation.
+        Teach the key idea in plain language, preserve uncertainty, and distinguish a fact from a
+        reasonable inference. If the source material cannot establish the answer, say what is
+        known and what remains uncertain without inventing details.
+
+        {summary_readability_guidance(True)}
+
+        Keep the answer between 45 and 120 words. Do not mention an article, story, prompt, model,
+        AI, or reading process. Do not add links, headings, bullets, or advice about what to click.
+        """
+    ).strip()
+    return ai_json(
+        provider,
+        model,
+        instructions,
+        prompt,
+        effort="high",
+        max_output_tokens=1400,
+        schema_name="skim_story_question",
+        schema=STORY_QUESTION_RESPONSE_SCHEMA,
+    )
+
+
 def learning_links_text(links: tuple[tuple[str, str], ...]) -> str:
     return " ".join(f"[{label}]({url})" for label, url in links)
 
@@ -3421,7 +3759,8 @@ def deeper_analysis(story: Story, evidence: ArticleEvidence) -> dict[str, str]:
     if not provider:
         return {
             "Deeper analysis": "Add OPENAI_API_KEY in Streamlit secrets to enable deeper analysis.",
-            "Research trail": f"Learn more: {learning_links_text(fallback_links)}",
+            "Research trail": "Choose a focused historical, institutional, or technical topic.",
+            "Learn More": f"Learn more: {learning_links_text(fallback_links)}",
         }
 
     model = ai_model(provider, deep=True)
@@ -3445,8 +3784,8 @@ def deeper_analysis(story: Story, evidence: ArticleEvidence) -> dict[str, str]:
     result = {"Deeper analysis": analysis}
     if watch_next:
         result["Watch next"] = watch_next
-    research_intro = f"{research} " if research else ""
-    result["Research trail"] = f"{research_intro}Learn more: {learning_links_text(fallback_links)}"
+    result["Research trail"] = research
+    result["Learn More"] = f"Learn more: {learning_links_text(fallback_links)}"
     result["__research_topic"] = research
     if provider == "openai":
         ai_cost = result_openai_cost(ai_result, model)
@@ -3522,6 +3861,63 @@ def research_topic_brief(
                 overhead_tokens=500,
             )
             ai_cost = openai_cost(model, estimated_input, 650)
+        result["__ai_cost"] = f"{ai_cost or 0.0:.8f}"
+    return result
+
+
+def answer_story_question(
+    prepared_story: PreparedStory,
+    question: str,
+) -> dict[str, str]:
+    provider = configured_ai_provider()
+    if not provider:
+        raise ValueError("Add an AI API key in Streamlit secrets to answer questions.")
+
+    story = prepared_story.ranked_story.story
+    analysis = st.session_state.deep_analyses.get(story.id, {})
+    summary_text = " ".join(
+        clean_text(str(value))
+        for label, value in prepared_story.card.items()
+        if not label.startswith("__") and label != "Learn More"
+    )
+    deep_context = " ".join(
+        clean_text(str(analysis.get(label, "")))
+        for label in ("Deeper analysis", "Watch next", "Research trail")
+        if analysis.get(label)
+    )
+    model = ai_model(provider, deep=True)
+    ai_result = ai_story_question_cached(
+        provider,
+        model,
+        story.id,
+        story.title,
+        story.source,
+        prepared_story.evidence.text,
+        summary_text,
+        deep_context,
+        clean_text(question),
+    )
+    answer = clean_text(strip_markdown_links(str(ai_result.get("answer", ""))))
+    if (
+        not 3 <= sentence_count(answer) <= 4
+        or not 35 <= len(answer.split()) <= 135
+        or prose_has_forbidden_language(answer)
+    ):
+        raise ValueError("The AI provider did not return a clear 3-4 sentence answer.")
+
+    result = {"answer": answer}
+    if provider == "openai":
+        ai_cost = result_openai_cost(ai_result, model)
+        if ai_cost is None:
+            estimated_input = estimated_token_count(
+                story.title,
+                prepared_story.evidence.text,
+                summary_text,
+                deep_context,
+                question,
+                overhead_tokens=420,
+            )
+            ai_cost = openai_cost(model, estimated_input, 500)
         result["__ai_cost"] = f"{ai_cost or 0.0:.8f}"
     return result
 
@@ -3680,9 +4076,12 @@ def render_story_header(
         return pressed
 
     meta = (
-        f'<span class="headline-category {category_class}">{html.escape(category)}</span> / '
-        f"{html.escape(coverage_outlet_text(ranked_story))} / "
-        f"{ranked_story.topic_story_count} {report_word} / "
+        f'<span class="headline-category {category_class}">{html.escape(category)}</span>'
+        f"<span>·</span>"
+        f'<span class="story-meta-outlets">{html.escape(coverage_outlet_text(ranked_story))}</span>'
+        f"<span>·</span>"
+        f"<span>{ranked_story.topic_story_count} {report_word}</span>"
+        f"<span>·</span>"
         f'<span class="category-time {category_class}">{html.escape(story_age(story))}</span>'
     )
     st.markdown(
@@ -3716,23 +4115,48 @@ def render_story_header(
     return False
 
 
+def ai_working_markup(message: str) -> str:
+    return (
+        '<div class="ai-working-box" role="status">'
+        '<div class="ai-working-icon" aria-hidden="true">'
+        '<span class="ai-working-newspaper">📰</span>'
+        '<span class="ai-working-lightbulb">💡</span>'
+        "</div>"
+        f'<div class="ai-working-copy">{html.escape(message)}</div>'
+        "</div>"
+    )
+
+
+def split_legacy_research_links(analysis: dict[str, str]) -> dict[str, str]:
+    normalized = dict(analysis)
+    research_trail = str(normalized.get("Research trail", ""))
+    split_trail = re.split(
+        r"\s*Learn more:\s*",
+        research_trail,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )
+    if len(split_trail) == 2:
+        normalized["Research trail"] = clean_text(split_trail[0])
+        normalized.setdefault("Learn More", f"Learn more: {split_trail[1].strip()}")
+    return normalized
+
+
 def render_deep_analysis(prepared_story: PreparedStory) -> None:
     story = prepared_story.ranked_story.story
-    analysis = st.session_state.deep_analyses.get(story.id)
+    stored_analysis = st.session_state.deep_analyses.get(story.id)
+    analysis = split_legacy_research_links(stored_analysis) if stored_analysis else None
     if not analysis:
         return
 
-    visible_rows = [
-        (label, value)
-        for label, value in analysis.items()
-        if not label.startswith("__")
-    ]
+    ordered_labels = ("Deeper analysis", "Watch next", "Research trail", "Learn More")
+    visible_rows = [(label, analysis[label]) for label in ordered_labels if analysis.get(label)]
     with st.container(key=f"deep_analysis_{story.id}"):
         for index, (label, value) in enumerate(visible_rows):
             field_classes = "deep-summary-field"
             if index == 0:
                 field_classes += " deep-summary-field-first"
-            label_html = f"<b>{html.escape(label)}:</b> "
+            label_html = "" if label == "Learn More" else f"<b>{html.escape(label)}:</b> "
             st.markdown(
                 f'<div class="{field_classes}">{label_html}{render_summary_value(value)}</div>',
                 unsafe_allow_html=True,
@@ -3751,44 +4175,114 @@ def render_deep_analysis(prepared_story: PreparedStory) -> None:
             if summarize_research:
                 provider = configured_ai_provider()
                 model = ai_model(provider, deep=True) if provider else "not configured"
-                with st.spinner(f"Using AI ({model}) to explain this research topic..."):
-                    try:
-                        brief = research_topic_brief(story, prepared_story.evidence, analysis)
-                        st.session_state.research_briefs[story.id] = brief
-                        topic_token = hashlib.sha256(
-                            research_topic_from_analysis(analysis).encode("utf-8")
-                        ).hexdigest()[:12]
-                        record_batch_ai_cost(
-                            [],
-                            (
-                                f"research-{st.session_state.batch_refresh_id}-"
-                                f"{story.id}-{topic_token}"
-                            ),
-                            card_ai_cost(brief),
-                            attempted_articles=1,
-                        )
-                    except Exception as exc:
-                        st.session_state.research_briefs[story.id] = {
-                            "Research brief": f"The AI provider could not complete this request: {exc}"
-                        }
+                loading_slot = st.empty()
+                loading_slot.markdown(
+                    ai_working_markup(f"Using AI ({model}) to explain this research topic..."),
+                    unsafe_allow_html=True,
+                )
+                try:
+                    brief = research_topic_brief(story, prepared_story.evidence, analysis)
+                    st.session_state.research_briefs[story.id] = brief
+                    topic_token = hashlib.sha256(
+                        research_topic_from_analysis(analysis).encode("utf-8")
+                    ).hexdigest()[:12]
+                    record_batch_ai_cost(
+                        [],
+                        (
+                            f"research-{st.session_state.batch_refresh_id}-"
+                            f"{story.id}-{topic_token}"
+                        ),
+                        card_ai_cost(brief),
+                        attempted_articles=1,
+                    )
+                except Exception as exc:
+                    st.session_state.research_briefs[story.id] = {
+                        "Research brief": f"The AI provider could not complete this request: {exc}"
+                    }
+                finally:
+                    loading_slot.empty()
 
-        research_brief = st.session_state.research_briefs.get(story.id)
-        if research_brief:
-            brief_text = str(research_brief.get("Research brief", ""))
+            research_brief = st.session_state.research_briefs.get(story.id)
+            if research_brief:
+                brief_text = str(research_brief.get("Research brief", ""))
+                st.markdown(
+                    '<div class="deep-summary-field"><b>Research brief:</b> '
+                    f"{html.escape(brief_text)}</div>",
+                    unsafe_allow_html=True,
+                )
+
+
+def render_story_questions(prepared_story: PreparedStory) -> None:
+    story = prepared_story.ranked_story.story
+    if story.id not in st.session_state.deep_analyses:
+        return
+
+    questions = list(st.session_state.story_questions.get(story.id, []))
+    with st.container(key=f"story_questions_{story.id}"):
+        st.markdown(
+            '<div class="story-question-heading">Ask about this story</div>',
+            unsafe_allow_html=True,
+        )
+        for exchange in questions:
             st.markdown(
-                '<div class="deep-summary-field"><b>Research brief:</b> '
-                f"{html.escape(brief_text)}</div>",
+                f'<div class="story-question">{html.escape(exchange["question"])}</div>'
+                f'<div class="story-answer">{html.escape(exchange["answer"])}</div>',
                 unsafe_allow_html=True,
             )
+
+        form_key = f"question_form_{story.id}_{len(questions)}"
+        with st.form(form_key, clear_on_submit=True):
+            question = st.text_area(
+                "Ask a question",
+                placeholder="Type a question here",
+                label_visibility="collapsed",
+                height=88,
+            )
+            submitted = st.form_submit_button("Ask AI", use_container_width=True)
+
+        if submitted and clean_text(question):
+            provider = configured_ai_provider()
+            model = ai_model(provider, deep=True) if provider else "not configured"
+            loading_slot = st.empty()
+            loading_slot.markdown(
+                ai_working_markup(f"Using AI ({model}) to answer your question..."),
+                unsafe_allow_html=True,
+            )
+            try:
+                result = answer_story_question(prepared_story, question)
+                questions.append(
+                    {
+                        "question": clean_text(question),
+                        "answer": result["answer"],
+                    }
+                )
+                st.session_state.story_questions[story.id] = questions
+                question_token = hashlib.sha256(
+                    clean_text(question).lower().encode("utf-8")
+                ).hexdigest()[:12]
+                record_batch_ai_cost(
+                    [],
+                    (
+                        f"question-{st.session_state.batch_refresh_id}-"
+                        f"{story.id}-{question_token}"
+                    ),
+                    card_ai_cost(result),
+                    attempted_articles=1,
+                )
+            except Exception as exc:
+                record_generation_issue(
+                    f"Skim could not answer that question: {clean_text(str(exc))[:180]}"
+                )
+            finally:
+                loading_slot.empty()
+            st.rerun()
 
 
 def render_story_details(prepared_story: PreparedStory) -> None:
     ranked_story = prepared_story.ranked_story
     story = ranked_story.story
-    article_story = prepared_story.article_story or story
     evidence = prepared_story.evidence
     summary = dict(prepared_story.card)
-    archived = story.id in st.session_state.archived
     display_headline = summary.pop("__headline")
 
     rows = ""
@@ -3799,17 +4293,41 @@ def render_story_details(prepared_story: PreparedStory) -> None:
         rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
     st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
 
+    if st.session_state.deep_analysis_loading_story_id == story.id:
+        loading_slot = st.empty()
+        loading_slot.markdown(
+            ai_working_markup("Building the deeper read..."),
+            unsafe_allow_html=True,
+        )
+        try:
+            analysis = deeper_analysis(story, evidence)
+            st.session_state.deep_analyses[story.id] = analysis
+            st.session_state.research_briefs.pop(story.id, None)
+            st.session_state.story_questions.pop(story.id, None)
+            record_batch_ai_cost(
+                [],
+                f"deep-{st.session_state.batch_refresh_id}-{story.id}",
+                card_ai_cost(analysis),
+                attempted_articles=1,
+            )
+        except Exception as exc:
+            st.session_state.deep_analyses[story.id] = {
+                "Deeper analysis": f"The AI provider could not complete this request: {exc}"
+            }
+        finally:
+            st.session_state.deep_analysis_loading_story_id = ""
+            loading_slot.empty()
+
+    render_deep_analysis(prepared_story)
+    render_story_questions(prepared_story)
+
     with st.container(key=f"story_actions_{story.id}"):
-        col1, col2, col3, col4 = st.columns([1, 1, 1, 1], gap="small", vertical_alignment="top")
+        col1, col2, col3 = st.columns([1, 1, 1], gap="small", vertical_alignment="top")
         with col1:
             st.link_button("Full story", evidence.url, use_container_width=True)
         with col2:
-            label = "Archived" if archived else "Archive"
-            if st.button(label, key=f"archive-{story.id}", icon=":material/bookmark:", use_container_width=True):
-                if archived:
-                    st.session_state.archived.remove(story.id)
-                else:
-                    st.session_state.archived.add(story.id)
+            if st.button("Deep analysis", key=f"deep-{story.id}", use_container_width=True):
+                st.session_state.deep_analysis_loading_story_id = story.id
                 st.rerun()
         with col3:
             st.link_button(
@@ -3817,28 +4335,6 @@ def render_story_details(prepared_story: PreparedStory) -> None:
                 share_sms_url(story, evidence.url, display_headline),
                 use_container_width=True,
             )
-        with col4:
-            if st.button("Deep analysis", key=f"deep-{story.id}", use_container_width=True):
-                with st.spinner("Building the deeper read..."):
-                    try:
-                        analysis = deeper_analysis(story, evidence)
-                        st.session_state.deep_analyses[story.id] = analysis
-                        st.session_state.research_briefs.pop(story.id, None)
-                        record_batch_ai_cost(
-                            [],
-                            f"deep-{st.session_state.batch_refresh_id}-{story.id}",
-                            card_ai_cost(analysis),
-                            attempted_articles=1,
-                        )
-                    except Exception as exc:
-                        st.session_state.deep_analyses[story.id] = {
-                            "Deeper analysis": f"The AI provider could not complete this request: {exc}"
-                        }
-
-    render_deep_analysis(prepared_story)
-
-    source = f"Source: {article_story.source}"
-    st.markdown(f'<div class="story-source">{html.escape(source)}</div>', unsafe_allow_html=True)
 
 
 def render_story(prepared_story: PreparedStory) -> None:
@@ -3875,22 +4371,27 @@ def render_headline_story(
                 st.rerun()
 
             if is_extracting and cached_result is None:
-                st.markdown('<div class="skim-working-card"></div>', unsafe_allow_html=True)
                 render_story_header(ranked_story, clean_headline_source(story.title))
-                try:
-                    with st.spinner(
+                loading_slot = st.empty()
+                loading_slot.markdown(
+                    ai_working_markup(
                         f"Using AI ({summary_model}) to extract and summarize this story..."
-                    ):
-                        prepared, attempted_cost = prepare_ranked_story(
-                            ranked_story,
-                            detail,
-                            summary_key,
-                            plain_language,
-                        )
+                    ),
+                    unsafe_allow_html=True,
+                )
+                try:
+                    prepared, attempted_cost = prepare_ranked_story(
+                        ranked_story,
+                        detail,
+                        summary_key,
+                        plain_language,
+                    )
                 except Exception as exc:
                     record_generation_issue(
                         f"Skim could not prepare the selected story: {clean_text(str(exc))[:180]}"
                     )
+                finally:
+                    loading_slot.empty()
                 st.session_state.prepared_summary_results[summary_key] = (
                     prepared,
                     attempted_cost,
@@ -3907,15 +4408,22 @@ def render_headline_story(
             if cached_result is not None:
                 prepared, attempted_cost = cached_result
             else:
-                with st.spinner(
-                    f"Using AI ({summary_model}) to extract and summarize this story..."
-                ):
+                loading_slot = st.empty()
+                loading_slot.markdown(
+                    ai_working_markup(
+                        f"Using AI ({summary_model}) to extract and summarize this story..."
+                    ),
+                    unsafe_allow_html=True,
+                )
+                try:
                     prepared, attempted_cost = prepare_ranked_story(
                         ranked_story,
                         detail,
                         summary_key,
                         plain_language,
                     )
+                finally:
+                    loading_slot.empty()
                 st.session_state.prepared_summary_results[summary_key] = (
                     prepared,
                     attempted_cost,
@@ -3944,6 +4452,8 @@ def render_headline_story(
             expanded_story_ids.add(story.id)
             st.session_state.expanded_story_ids = expanded_story_ids
             st.session_state.extracting_story_id = story.id
+            st.session_state.pinned_story_id = story.id
+            st.session_state.scroll_to_top_pending = True
             st.rerun()
 
         if not is_expanded:
@@ -3973,6 +4483,8 @@ def render_headline_story(
             st.session_state.expanded_story_ids = expanded_story_ids
             if st.session_state.extracting_story_id == story.id:
                 st.session_state.extracting_story_id = ""
+            if st.session_state.pinned_story_id == story.id:
+                st.session_state.pinned_story_id = ""
             st.rerun()
 
 
@@ -3982,7 +4494,7 @@ def render_header() -> None:
         <div class="skim-header">
             <div>
                 <div class="skim-brand">{APP_NAME}</div>
-                <div class="skim-tagline">Fast personal news, trimmed to what matters.</div>
+                <div class="skim-tagline">Fresh &amp; fast AI news briefs.</div>
             </div>
             <div class="skim-pill">{html.escape(ai_provider_label())}</div>
         </div>
@@ -4027,7 +4539,6 @@ def settings_signature(
     include_aggregators: bool,
     include_gdelt: bool,
     include_social: bool,
-    show_archived: bool,
     keywords: tuple[str, ...],
 ) -> tuple:
     return (
@@ -4035,7 +4546,6 @@ def settings_signature(
         include_aggregators,
         include_gdelt,
         include_social,
-        show_archived,
         keywords,
     )
 
@@ -4102,9 +4612,21 @@ def record_batch_ai_cost(
     if configured_ai_provider() != "openai":
         return
     batch_cost = max(0.0, attempted_ai_cost)
-    recorded_events = list(st.session_state.ai_cost_recorded_events)
-    total_micros, changed = accumulate_ai_cost(
+    stored_ledger = read_ai_cost_ledger()
+    recorded_events = list(
+        dict.fromkeys(
+            [
+                *stored_ledger["events"],
+                *st.session_state.ai_cost_recorded_events,
+            ]
+        )
+    )
+    starting_total = max(
+        int(stored_ledger["total_micros"]),
         int(st.session_state.ai_cost_total_micros),
+    )
+    total_micros, changed = accumulate_ai_cost(
+        starting_total,
         recorded_events,
         refresh_key,
         batch_cost,
@@ -4116,8 +4638,15 @@ def record_batch_ai_cost(
     latest_micros = round(batch_cost * AI_COST_SCALE)
     st.session_state.ai_cost_total_micros = total_micros
     st.session_state.ai_cost_latest_micros = latest_micros
-    st.session_state.ai_cost_total_articles += article_count
+    st.session_state.ai_cost_total_articles = (
+        max(
+            int(stored_ledger["total_articles"]),
+            int(st.session_state.ai_cost_total_articles),
+        )
+        + article_count
+    )
     st.session_state.ai_cost_latest_articles = article_count
+    st.session_state.ai_cost_updated_at = round(datetime.now(timezone.utc).timestamp() * 1000)
     recorded_events.append(ai_cost_event_token(refresh_key))
     st.session_state.ai_cost_recorded_events = list(dict.fromkeys(recorded_events))[
         -AI_COST_MAX_RECORDED_EVENTS:
@@ -4142,17 +4671,13 @@ def render_batch_timestamp(batch_size: int) -> None:
     st.caption(f"{batch_size} {headline_word} refreshed: {label} · No repeats for {NO_REPEAT_HOURS} hours")
 
 
-def ranked_item_is_available(item: RankedStory, show_archived: bool, blocked_cluster_keys: set[str]) -> bool:
-    return (
-        item.cluster_key not in blocked_cluster_keys
-        and (show_archived or item.story.id not in st.session_state.archived)
-    )
+def ranked_item_is_available(item: RankedStory, blocked_cluster_keys: set[str]) -> bool:
+    return item.cluster_key not in blocked_cluster_keys
 
 
 def current_batch_from_keys(
     ranked_stories: list[RankedStory],
     keyword_rankings: dict[str, list[RankedStory]],
-    show_archived: bool,
 ) -> list[RankedStory]:
     current_cluster_keys = st.session_state.current_cluster_keys
     if not current_cluster_keys:
@@ -4168,7 +4693,7 @@ def current_batch_from_keys(
     current: list[RankedStory] = []
     for cluster_key in current_cluster_keys:
         item = available_by_key.get(cluster_key)
-        if item and ranked_item_is_available(item, show_archived, set()):
+        if item and ranked_item_is_available(item, set()):
             current.append(item)
     return current
 
@@ -4223,7 +4748,6 @@ def append_prepared_story(
 def build_publishable_batch(
     ranked_stories: list[RankedStory],
     keyword_rankings: dict[str, list[RankedStory]],
-    show_archived: bool,
     detail: int,
     on_story: Callable[[PreparedStory, int], None] | None = None,
 ) -> list[PreparedStory]:
@@ -4232,7 +4756,7 @@ def build_publishable_batch(
 
     prune_shown_cluster_history()
     shown_cluster_keys = set(st.session_state.shown_cluster_history)
-    current = current_batch_from_keys(ranked_stories, keyword_rankings, show_archived)
+    current = current_batch_from_keys(ranked_stories, keyword_rankings)
     if current:
         refresh_key = str(st.session_state.get("batch_refresh_id", "")) or utc_now().isoformat()
         restored: list[PreparedStory] = []
@@ -4258,7 +4782,7 @@ def build_publishable_batch(
     for item in ranked_stories[:MAX_BASE_CANDIDATES]:
         if len(batch) >= BATCH_SIZE:
             break
-        if ranked_item_is_available(item, show_archived, shown_cluster_keys | used_cluster_keys):
+        if ranked_item_is_available(item, shown_cluster_keys | used_cluster_keys):
             prepared, attempt_cost = prepare_ranked_story(item, detail, refresh_key)
             attempted_ai_cost += attempt_cost
             if prepared:
@@ -4267,7 +4791,7 @@ def build_publishable_batch(
 
     for keyword in keyword_rankings:
         for item in keyword_rankings[keyword][:MAX_KEYWORD_CANDIDATES]:
-            if ranked_item_is_available(item, show_archived, shown_cluster_keys | used_cluster_keys):
+            if ranked_item_is_available(item, shown_cluster_keys | used_cluster_keys):
                 prepared, attempt_cost = prepare_ranked_story(item, detail, refresh_key)
                 attempted_ai_cost += attempt_cost
                 if prepared:
@@ -4284,10 +4808,9 @@ def build_publishable_batch(
 
 def build_headline_batch(
     ranked_stories: list[RankedStory],
-    show_archived: bool,
 ) -> list[RankedStory]:
     prune_shown_cluster_history()
-    current = current_batch_from_keys(ranked_stories, {}, show_archived)
+    current = current_batch_from_keys(ranked_stories, {})
     if current:
         return sort_headlines_by_age(current)
 
@@ -4297,7 +4820,7 @@ def build_headline_batch(
     for item in ranked_stories:
         if len(batch) >= BATCH_SIZE:
             break
-        if ranked_item_is_available(item, show_archived, shown_cluster_keys | used_cluster_keys):
+        if ranked_item_is_available(item, shown_cluster_keys | used_cluster_keys):
             batch.append(item)
             used_cluster_keys.add(item.cluster_key)
 
@@ -4308,135 +4831,31 @@ def build_headline_batch(
     return batch
 
 
-def main() -> None:
-    st.set_page_config(page_title=APP_NAME, page_icon="S", layout="centered")
-    page_style()
-
-    if "archived" not in st.session_state:
-        st.session_state.archived = set()
-    if "current_cluster_keys" not in st.session_state:
-        st.session_state.current_cluster_keys = []
-    if "last_settings" not in st.session_state:
-        st.session_state.last_settings = None
-    if "deep_analyses" not in st.session_state:
-        st.session_state.deep_analyses = {}
-    if "research_briefs" not in st.session_state:
-        st.session_state.research_briefs = {}
-    if "prepared_summary_results" not in st.session_state:
-        st.session_state.prepared_summary_results = {}
-    if "extracting_story_id" not in st.session_state:
-        st.session_state.extracting_story_id = ""
-    if "expanded_story_ids" not in st.session_state:
-        st.session_state.expanded_story_ids = set()
-    if "generation_issues" not in st.session_state:
-        st.session_state.generation_issues = []
-    if "shown_cluster_history" not in st.session_state:
-        legacy_seen = st.session_state.get("seen_cluster_keys", set())
-        now = utc_now().isoformat()
-        st.session_state.shown_cluster_history = {cluster_key: now for cluster_key in legacy_seen}
-    if "batch_refresh_id" not in st.session_state:
-        st.session_state.batch_refresh_id = ""
-    if "batch_refreshed_at" not in st.session_state:
-        st.session_state.batch_refreshed_at = ""
-    st.session_state.setdefault(
-        "selected_topics",
-        ["World", "US", "Politics", "Business", "Tech", "Climate", "Health"],
-    )
-    st.session_state.setdefault("detail", 3)
-    st.session_state.setdefault("plain_language_summaries", True)
-    st.session_state.setdefault("include_social", False)
-    st.session_state.setdefault("include_aggregators", True)
-    st.session_state.setdefault("include_gdelt", False)
-    st.session_state.setdefault("show_archived", False)
-    initialize_keyword_state()
-    initialize_ai_cost_state()
-
-    if st.session_state.extracting_story_id:
-        st.markdown('<div class="skim-focus-mode"></div>', unsafe_allow_html=True)
-
-    render_header()
-
-    batch_timestamp_slot = st.empty()
-    story_stream = st.container(key="headline_feed")
-
-    selected_topics = st.session_state.selected_topics
-    detail = st.session_state.detail
-    plain_language = bool(st.session_state.plain_language_summaries)
-    include_social = st.session_state.include_social
-    include_aggregators = st.session_state.include_aggregators
-    include_gdelt = st.session_state.include_gdelt
-    show_archived = st.session_state.show_archived
-    keywords = custom_keywords()
-
-    current_settings = settings_signature(
-        selected_topics,
-        include_aggregators,
-        include_gdelt,
-        include_social,
-        show_archived,
-        keywords,
-    )
-    if st.session_state.last_settings != current_settings:
-        st.session_state.current_cluster_keys = []
-        st.session_state.last_settings = current_settings
-
-    with st.spinner("Building a stronger story list..."):
-        stories, errors = fetch_stories(
-            tuple(selected_topics),
-            include_aggregators,
-            include_social,
-            keywords,
-            include_gdelt,
+def render_admin(errors: Sequence[str], batch_size: int) -> None:
+    with st.expander("Admin", expanded=False):
+        password = st.text_input(
+            "Admin password",
+            type="password",
+            key="admin_password",
+            placeholder="Password",
         )
-        ranked_stories = rank_stories(stories, keywords)
+        if password != ADMIN_PASSWORD:
+            st.markdown(
+                '<div class="admin-lock-copy">Enter the Admin password to manage Skim.</div>',
+                unsafe_allow_html=True,
+            )
+            if password:
+                st.error("Incorrect password.")
+            return
 
-    batch = build_headline_batch(ranked_stories, show_archived)
-    extracting_story_id = st.session_state.extracting_story_id
-    if extracting_story_id:
-        focused_batch = [
-            item for item in batch if item.story.id == extracting_story_id
-        ]
-        if not focused_batch:
-            st.session_state.extracting_story_id = ""
-            st.rerun()
-        batch_to_render = focused_batch
-    else:
-        batch_to_render = batch
-    st.session_state.generation_issues = []
-    with story_stream:
-        for ranked_story in batch_to_render:
-            render_headline_story(ranked_story, detail, plain_language)
-        if not extracting_story_id and batch and st.button(
-            "Load 20 more",
-            key="load-more-headlines",
-            icon=":material/add:",
-            help="Show the next unseen 20 headlines from the current discovery pool.",
-            use_container_width=True,
-        ):
-            load_next_story_batch()
-            st.rerun()
+        st.metric("Headlines", batch_size)
 
-    with batch_timestamp_slot.container():
-        render_batch_timestamp(len(batch))
-
-    errors.extend(st.session_state.generation_issues)
-    if not batch:
-        st.info(
-            f"No new headlines are available under the {NO_REPEAT_HOURS}-hour no-repeat rule. "
-            "Open Customize to broaden topics or clear the history."
-        )
-    st.divider()
-
-    col1, col2 = st.columns(2)
-    col1.metric("Headlines", len(batch))
-    col2.metric("Archived", len(st.session_state.archived))
-
-    if errors:
-        with st.expander("Feed notes", expanded=False):
+        if errors:
+            st.markdown("**Feed notes**")
             for error in errors[:12]:
                 st.write(error)
 
-    with st.expander("Customize", expanded=False):
+        st.markdown("### Customize")
         st.multiselect(
             "Topics",
             options=list(TOPICS.keys()),
@@ -4465,12 +4884,12 @@ def main() -> None:
                 key="include_gdelt",
                 help="Optional free global discovery. It can be slower when the public API is busy.",
             )
-            st.toggle("Show archived stories", key="show_archived")
             if st.button("Clear 24-hour history", use_container_width=True):
                 st.session_state.shown_cluster_history = {}
                 st.session_state.current_cluster_keys = []
                 st.rerun()
-        st.markdown("Keyword boosters")
+
+        st.markdown("**Keyword boosters**")
         st.caption("Saved keywords influence which headlines rise into the 20-item list.")
         for row_index in range(3):
             cols = st.columns(3)
@@ -4485,32 +4904,178 @@ def main() -> None:
                     )
         persist_keywords_to_query_params()
         st.caption(
-            "The main briefing now favors independent outlet confirmation, fast coverage growth, "
+            "The main briefing favors independent outlet confirmation, fast coverage growth, "
             "and fresh consequential reporting from major newsrooms."
         )
 
-    if st.button(
-        "Refresh latest stories",
-        icon=":material/sync:",
-        help="Repoll every live source and build a new briefing without repeating the last 24 hours.",
-        use_container_width=True,
-    ):
-        complete_story_refresh()
-        st.rerun()
+        if st.button(
+            "Refresh latest stories",
+            icon=":material/sync:",
+            help="Repoll every live source and build a new briefing without repeating the last 24 hours.",
+            use_container_width=True,
+        ):
+            complete_story_refresh()
+            st.rerun()
 
-    st.markdown(
-        """
-        <p class="skim-footnote">
-            Skim uses public RSS feeds and the
-            <a href="https://www.gdeltproject.org/" target="_blank" rel="noopener noreferrer">GDELT Project</a>
-            to find stories, reads the publisher article, and uses OpenAI for the headline,
-            summary, and Background. Cards without enough source text or a clean grounded result
-            are left out.
-        </p>
-        """,
-        unsafe_allow_html=True,
+        st.markdown(
+            """
+            <p class="skim-footnote">
+                Skim uses public RSS feeds and the
+                <a href="https://www.gdeltproject.org/" target="_blank" rel="noopener noreferrer">GDELT Project</a>
+                to find stories, reads the publisher article, and uses OpenAI for its briefings.
+            </p>
+            """,
+            unsafe_allow_html=True,
+        )
+        render_ai_cost_summary(st)
+
+        st.markdown("**All-time AI cost ledger**")
+        st.caption(
+            "This is Skim's cumulative estimate from API usage returned by OpenAI. "
+            "It is stored in the app and backed up in this browser."
+        )
+        current_dollars = int(st.session_state.ai_cost_total_micros) / AI_COST_SCALE
+        st.session_state.setdefault("admin_ai_cost_dollars", current_dollars)
+        st.number_input(
+            "Set cumulative cost ($)",
+            min_value=0.0,
+            step=0.01,
+            format="%.4f",
+            key="admin_ai_cost_dollars",
+        )
+        set_col, reset_col = st.columns(2)
+        with set_col:
+            if st.button("Set total", use_container_width=True):
+                set_ai_cost_total(float(st.session_state.admin_ai_cost_dollars))
+                st.rerun()
+        with reset_col:
+            if st.button("Reset to $0", use_container_width=True):
+                set_ai_cost_total(0.0, reset_history=True)
+                st.session_state.admin_ai_cost_dollars = 0.0
+                st.rerun()
+
+
+def main() -> None:
+    st.set_page_config(page_title=APP_NAME, page_icon="S", layout="centered")
+    page_style()
+
+    if "current_cluster_keys" not in st.session_state:
+        st.session_state.current_cluster_keys = []
+    if "last_settings" not in st.session_state:
+        st.session_state.last_settings = None
+    if "deep_analyses" not in st.session_state:
+        st.session_state.deep_analyses = {}
+    if "research_briefs" not in st.session_state:
+        st.session_state.research_briefs = {}
+    if "story_questions" not in st.session_state:
+        st.session_state.story_questions = {}
+    if "prepared_summary_results" not in st.session_state:
+        st.session_state.prepared_summary_results = {}
+    if "extracting_story_id" not in st.session_state:
+        st.session_state.extracting_story_id = ""
+    if "deep_analysis_loading_story_id" not in st.session_state:
+        st.session_state.deep_analysis_loading_story_id = ""
+    if "pinned_story_id" not in st.session_state:
+        st.session_state.pinned_story_id = ""
+    if "scroll_to_top_pending" not in st.session_state:
+        st.session_state.scroll_to_top_pending = False
+    if "expanded_story_ids" not in st.session_state:
+        st.session_state.expanded_story_ids = set()
+    if "generation_issues" not in st.session_state:
+        st.session_state.generation_issues = []
+    if "shown_cluster_history" not in st.session_state:
+        legacy_seen = st.session_state.get("seen_cluster_keys", set())
+        now = utc_now().isoformat()
+        st.session_state.shown_cluster_history = {cluster_key: now for cluster_key in legacy_seen}
+    if "batch_refresh_id" not in st.session_state:
+        st.session_state.batch_refresh_id = ""
+    if "batch_refreshed_at" not in st.session_state:
+        st.session_state.batch_refreshed_at = ""
+    st.session_state.setdefault(
+        "selected_topics",
+        ["World", "US", "Politics", "Business", "Tech", "Climate", "Health"],
     )
-    render_ai_cost_summary(st)
+    st.session_state.setdefault("detail", 3)
+    st.session_state.setdefault("plain_language_summaries", True)
+    st.session_state.setdefault("include_social", False)
+    st.session_state.setdefault("include_aggregators", True)
+    st.session_state.setdefault("include_gdelt", False)
+    initialize_keyword_state()
+    query_had_cost_ledger = AI_COST_QUERY_TOTAL in st.query_params
+    initialize_ai_cost_state()
+    sync_ai_cost_browser_storage(query_had_cost_ledger)
+
+    render_header()
+    if st.session_state.scroll_to_top_pending:
+        st.session_state.scroll_to_top_pending = False
+        scroll_page_to_top()
+
+    batch_timestamp_slot = st.empty()
+    story_stream = st.container(key="headline_feed")
+
+    selected_topics = st.session_state.selected_topics
+    detail = st.session_state.detail
+    plain_language = bool(st.session_state.plain_language_summaries)
+    include_social = st.session_state.include_social
+    include_aggregators = st.session_state.include_aggregators
+    include_gdelt = st.session_state.include_gdelt
+    keywords = custom_keywords()
+
+    current_settings = settings_signature(
+        selected_topics,
+        include_aggregators,
+        include_gdelt,
+        include_social,
+        keywords,
+    )
+    if st.session_state.last_settings != current_settings:
+        st.session_state.current_cluster_keys = []
+        st.session_state.last_settings = current_settings
+
+    with st.spinner("Building a stronger story list..."):
+        stories, errors = fetch_stories(
+            tuple(selected_topics),
+            include_aggregators,
+            include_social,
+            keywords,
+            include_gdelt,
+        )
+        ranked_stories = rank_stories(stories, keywords)
+
+    batch = build_headline_batch(ranked_stories)
+    pinned_story_id = st.session_state.pinned_story_id
+    pinned_items = [item for item in batch if item.story.id == pinned_story_id]
+    if pinned_story_id and not pinned_items:
+        st.session_state.pinned_story_id = ""
+        st.session_state.extracting_story_id = ""
+    batch_to_render = [
+        *pinned_items,
+        *(item for item in batch if item.story.id != pinned_story_id),
+    ]
+    st.session_state.generation_issues = []
+    with story_stream:
+        for ranked_story in batch_to_render:
+            render_headline_story(ranked_story, detail, plain_language)
+        if batch and st.button(
+            "Load 20 more",
+            key="load-more-headlines",
+            icon=":material/add:",
+            help="Show the next unseen 20 headlines from the current discovery pool.",
+            use_container_width=True,
+        ):
+            load_next_story_batch()
+            st.rerun()
+
+    with batch_timestamp_slot.container():
+        render_batch_timestamp(len(batch))
+
+    errors.extend(st.session_state.generation_issues)
+    if not batch:
+        st.info(
+            f"No new headlines are available under the {NO_REPEAT_HOURS}-hour no-repeat rule. "
+            "Open Admin to broaden topics or clear the history."
+        )
+    render_admin(errors, len(batch))
 
 
 if __name__ == "__main__":

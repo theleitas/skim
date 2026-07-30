@@ -3,3 +3,5 @@ __pycache__/
 .DS_Store
 .venv/
 .streamlit/secrets.toml
+.skim_ai_cost_ledger.json
+.skim_ai_cost_ledger.tmp

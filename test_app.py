@@ -1,6 +1,9 @@
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import app
@@ -420,6 +423,99 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertGreater(app.card_ai_cost(result), 0)
         self.assertEqual(result["__research_topic"], "Study cancer-cluster methodology.")
+        self.assertEqual(result["Research trail"], "Study cancer-cluster methodology.")
+        self.assertTrue(result["Learn More"].startswith("Learn more:"))
+        self.assertNotIn("Learn more:", result["Research trail"])
+
+    def test_story_learning_links_returns_one_reference_and_one_wikipedia_page(self) -> None:
+        links = app.story_learning_links(self.story, ("Health", "US"))
+
+        self.assertEqual(len(links), 2)
+        self.assertFalse(app.is_wikipedia_url(links[0][1]))
+        self.assertTrue(app.is_wikipedia_url(links[1][1]))
+
+    def test_legacy_research_trail_links_are_split_into_their_own_row(self) -> None:
+        analysis = {
+            "Research trail": (
+                "Understand cancer-cluster methodology. "
+                "Learn more: [CDC health topics](https://www.cdc.gov/health-topics.html)"
+            )
+        }
+
+        normalized = app.split_legacy_research_links(analysis)
+
+        self.assertEqual(
+            normalized["Research trail"],
+            "Understand cancer-cluster methodology.",
+        )
+        self.assertTrue(normalized["Learn More"].startswith("Learn more:"))
+
+    def test_ai_cost_ledger_survives_a_file_round_trip(self) -> None:
+        ledger = {
+            "total_micros": 12345,
+            "latest_micros": 345,
+            "total_articles": 8,
+            "latest_articles": 1,
+            "updated_at": 1722366000000,
+            "events": ["0123456789abcdef"],
+        }
+
+        with TemporaryDirectory() as temporary_directory:
+            ledger_path = Path(temporary_directory) / "ai-cost.json"
+            with patch.object(app, "AI_COST_LEDGER_PATH", ledger_path):
+                app.write_ai_cost_ledger(ledger)
+                restored = app.read_ai_cost_ledger()
+
+        self.assertEqual(restored, ledger)
+
+    def test_story_question_answer_is_short_grounded_and_costed(self) -> None:
+        evidence_text = " ".join(
+            "Officials described the investigation and the evidence needed for the next decision."
+            for _ in range(30)
+        )
+        prepared = app.PreparedStory(
+            ranked_story=app.RankedStory(
+                story=self.story,
+                cluster_key="question-cluster",
+                references=2,
+                topic_story_count=2,
+                score=10,
+            ),
+            evidence=app.ArticleEvidence(
+                url=self.story.link,
+                title=self.story.title,
+                text=evidence_text,
+                word_count=len(evidence_text.split()),
+            ),
+            card={
+                "__headline": "Officials begin review of childhood cancer cases",
+                "": self.good_card()["summary"],
+                "Background": self.good_card()["background"],
+            },
+        )
+        ai_result = {
+            "answer": (
+                "A reported cluster does not prove that one exposure caused the illnesses. "
+                "Investigators compare the observed cases with the number normally expected for "
+                "a similar population, then study timing, diagnoses, and possible shared exposures. "
+                "A rate above the expected baseline would justify a more focused investigation."
+            ),
+            "__usage_input_tokens": "1600",
+            "__usage_output_tokens": "180",
+            "__usage_cached_input_tokens": "0",
+            "__usage_cache_write_tokens": "0",
+        }
+
+        with (
+            patch.object(app.st, "session_state", SimpleNamespace(deep_analyses={})),
+            patch.object(app, "configured_ai_provider", return_value="openai"),
+            patch.object(app, "ai_model", return_value="gpt-5.6-terra"),
+            patch.object(app, "ai_story_question_cached", return_value=ai_result),
+        ):
+            result = app.answer_story_question(prepared, "Does a cluster prove a common cause?")
+
+        self.assertIn(app.sentence_count(result["answer"]), (3, 4))
+        self.assertGreater(app.card_ai_cost(result), 0)
 
     def test_research_topic_falls_back_to_visible_research_trail(self) -> None:
         analysis = {
