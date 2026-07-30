@@ -81,6 +81,7 @@ AI_COST_LEDGER_PATH = Path(__file__).with_name(".skim_ai_cost_ledger.json")
 AI_COST_BROWSER_STORAGE_KEY = "skim-ai-cost-ledger-v2"
 AI_COST_LEDGER_LOCK = threading.Lock()
 ADMIN_PASSWORD = "0102"
+EASTERN_STANDARD_TIME = timezone(timedelta(hours=-5), "EST")
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -903,9 +904,6 @@ def page_style() -> None:
             }
 
             .st-key-headline_feed [class*="st-key-deep_analysis_"] {
-                display: flex;
-                flex-direction: column;
-                gap: 0 !important;
                 color: #ebe5da;
                 font-size: 0.95rem;
                 line-height: 1.5;
@@ -914,6 +912,18 @@ def page_style() -> None:
                 border-radius: 8px;
                 padding: 0.85rem 0.9rem;
                 margin-bottom: 0.95rem;
+                overflow: hidden;
+            }
+
+            .st-key-headline_feed [class*="st-key-deep_analysis_"]
+            > div[data-testid="stVerticalBlock"] {
+                gap: 0 !important;
+            }
+
+            .st-key-headline_feed [class*="st-key-deep_analysis_"]
+            [data-testid="stElementContainer"] {
+                height: auto !important;
+                min-height: 0 !important;
             }
 
             .ai-working-box {
@@ -996,6 +1006,7 @@ def page_style() -> None:
                 border-top: 1px solid #332f29;
                 padding-top: 0.62rem;
                 margin-top: 0.62rem;
+                overflow-wrap: anywhere;
             }
 
             .deep-summary-field-first {
@@ -1008,44 +1019,70 @@ def page_style() -> None:
                 color: var(--skim-ink);
             }
 
-            .st-key-headline_feed [class*="st-key-research_action_"] {
-                margin-top: 0.28rem;
+            .st-key-headline_feed [class*="st-key-research_row_"] {
+                border-top: 1px solid #332f29;
+                display: block !important;
+                line-height: 1.5;
+                margin-top: 0.62rem;
+                padding-top: 0.62rem;
             }
 
-            .st-key-headline_feed [class*="st-key-research_action_"]
+            .st-key-headline_feed [class*="st-key-research_row_"]
+            [data-testid="stElementContainer"],
+            .st-key-headline_feed [class*="st-key-research_row_"] .stMarkdown,
+            .st-key-headline_feed [class*="st-key-research_row_"] [data-testid="stMarkdownContainer"],
+            .st-key-headline_feed [class*="st-key-research_row_"] p {
+                display: inline !important;
+                width: auto !important;
+                margin: 0 !important;
+            }
+
+            .research-trail-copy {
+                overflow-wrap: anywhere;
+            }
+
+            .st-key-headline_feed [class*="st-key-research_row_"] .stButton {
+                display: inline !important;
+                width: auto !important;
+            }
+
+            .st-key-headline_feed [class*="st-key-research_row_"]
             [data-testid="stBaseButton-tertiary"],
-            .st-key-headline_feed [class*="st-key-research_action_"]
-            [data-testid="stBaseButton-tertiary"]:hover,
-            .st-key-headline_feed [class*="st-key-research_action_"]
-            [data-testid="stBaseButton-tertiary"]:focus {
-                justify-content: flex-start !important;
-                width: auto;
-                min-height: 0;
-                height: auto;
-                padding: 0 !important;
+            .st-key-headline_feed [class*="st-key-research_row_"]
+            [data-testid="stBaseButton-tertiary"]:visited {
                 background: transparent !important;
                 border: 0 !important;
                 border-radius: 0;
                 box-shadow: none !important;
                 color: var(--skim-category, var(--skim-accent)) !important;
-                font-size: 0.78rem;
+                display: inline !important;
+                height: auto;
+                min-height: 0;
+                padding: 0 !important;
+                font-size: inherit;
                 font-style: italic;
                 font-weight: 500;
-                line-height: 1.35;
-                text-align: left;
+                line-height: inherit;
+                margin-left: 0.18em;
+                text-decoration: none !important;
+                vertical-align: baseline;
+                width: auto;
             }
 
-            .st-key-headline_feed [class*="st-key-research_action_"]
-            [data-testid="stBaseButton-tertiary"] * {
+            .st-key-headline_feed [class*="st-key-research_row_"]
+            [data-testid="stBaseButton-tertiary"] *,
+            .st-key-headline_feed [class*="st-key-research_row_"]
+            [data-testid="stBaseButton-tertiary"]:hover,
+            .st-key-headline_feed [class*="st-key-research_row_"]
+            [data-testid="stBaseButton-tertiary"]:focus {
                 color: var(--skim-category, var(--skim-accent)) !important;
                 font-size: inherit !important;
                 font-style: italic !important;
-                font-weight: inherit;
-                line-height: inherit;
-                text-align: left;
+                line-height: inherit !important;
+                text-decoration: none !important;
             }
 
-            .st-key-headline_feed [class*="st-key-research_action_"]
+            .st-key-headline_feed [class*="st-key-research_row_"]
             [data-testid="stBaseButton-tertiary"]:hover {
                 text-shadow: 0 0 9px color-mix(
                     in srgb,
@@ -1130,7 +1167,7 @@ def page_style() -> None:
             }
 
             .st-key-headline_feed [class*="st-key-close_brief_"] {
-                margin-top: 0.34rem;
+                margin-top: -0.5rem;
             }
 
             .st-key-headline_feed [class*="st-key-close_brief_"] button {
@@ -1169,8 +1206,8 @@ def page_style() -> None:
                 padding-bottom: 0.55rem;
             }
 
-            .st-key-headline_feed [class*="st-key-story_questions_"] textarea {
-                min-height: 5rem !important;
+            .st-key-headline_feed [class*="st-key-story_questions_"] input {
+                min-height: 2.8rem !important;
                 background: #020303;
                 border-color: color-mix(
                     in srgb,
@@ -1183,6 +1220,11 @@ def page_style() -> None:
             .st-key-headline_feed [class*="st-key-story_questions_"] [data-testid="stForm"] {
                 border: 0;
                 padding: 0;
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stFormSubmitButton"] {
+                display: none !important;
             }
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.st-key-load-more-headlines) {
@@ -4149,29 +4191,40 @@ def render_deep_analysis(prepared_story: PreparedStory) -> None:
     if not analysis:
         return
 
-    ordered_labels = ("Deeper analysis", "Watch next", "Research trail", "Learn More")
-    visible_rows = [(label, analysis[label]) for label in ordered_labels if analysis.get(label)]
+    research_topic = research_topic_from_analysis(analysis)
     with st.container(key=f"deep_analysis_{story.id}"):
-        for index, (label, value) in enumerate(visible_rows):
-            field_classes = "deep-summary-field"
-            if index == 0:
-                field_classes += " deep-summary-field-first"
-            label_html = "" if label == "Learn More" else f"<b>{html.escape(label)}:</b> "
-            st.markdown(
-                f'<div class="{field_classes}">{label_html}{render_summary_value(value)}</div>',
-                unsafe_allow_html=True,
-            )
-
-            if label != "Research trail" or not research_topic_from_analysis(analysis):
+        leading_fields: list[str] = []
+        for index, label in enumerate(("Deeper analysis", "Watch next")):
+            value = analysis.get(label)
+            if not value:
                 continue
+            field_classes = "deep-summary-field"
+            if not leading_fields:
+                field_classes += " deep-summary-field-first"
+            leading_fields.append(
+                f'<div class="{field_classes}"><b>{html.escape(label)}:</b> '
+                f"{render_summary_value(value)}</div>"
+            )
+        if leading_fields:
+            st.markdown("".join(leading_fields), unsafe_allow_html=True)
 
-            with st.container(key=f"research_action_{story.id}"):
+        if research_topic:
+            research_value = str(analysis.get("Research trail", ""))
+            rendered_research = render_summary_value(research_value)
+            if clean_text(research_value)[-1:] not in ".!?":
+                rendered_research += "."
+            with st.container(key=f"research_row_{story.id}"):
+                st.markdown(
+                    '<span class="research-trail-copy"><b>Research trail:</b> '
+                    f"{rendered_research}&nbsp;</span>",
+                    unsafe_allow_html=True,
+                )
                 summarize_research = st.button(
                     "Summarize this research with AI.",
                     key=f"research-brief-{story.id}",
                     type="tertiary",
-                    help="Build a short plain-language lesson about the research topic.",
                 )
+
             if summarize_research:
                 provider = configured_ai_provider()
                 model = ai_model(provider, deep=True) if provider else "not configured"
@@ -4183,15 +4236,10 @@ def render_deep_analysis(prepared_story: PreparedStory) -> None:
                 try:
                     brief = research_topic_brief(story, prepared_story.evidence, analysis)
                     st.session_state.research_briefs[story.id] = brief
-                    topic_token = hashlib.sha256(
-                        research_topic_from_analysis(analysis).encode("utf-8")
-                    ).hexdigest()[:12]
+                    topic_token = hashlib.sha256(research_topic.encode("utf-8")).hexdigest()[:12]
                     record_batch_ai_cost(
                         [],
-                        (
-                            f"research-{st.session_state.batch_refresh_id}-"
-                            f"{story.id}-{topic_token}"
-                        ),
+                        f"research-{st.session_state.batch_refresh_id}-{story.id}-{topic_token}",
                         card_ai_cost(brief),
                         attempted_articles=1,
                     )
@@ -4204,12 +4252,19 @@ def render_deep_analysis(prepared_story: PreparedStory) -> None:
 
             research_brief = st.session_state.research_briefs.get(story.id)
             if research_brief:
-                brief_text = str(research_brief.get("Research brief", ""))
+                brief_text = html.escape(str(research_brief.get("Research brief", "")))
                 st.markdown(
                     '<div class="deep-summary-field"><b>Research brief:</b> '
-                    f"{html.escape(brief_text)}</div>",
+                    f"{brief_text}</div>",
                     unsafe_allow_html=True,
                 )
+
+        learn_more = analysis.get("Learn More")
+        if learn_more:
+            st.markdown(
+                f'<div class="deep-summary-field">{render_summary_value(learn_more)}</div>',
+                unsafe_allow_html=True,
+            )
 
 
 def render_story_questions(prepared_story: PreparedStory) -> None:
@@ -4230,15 +4285,18 @@ def render_story_questions(prepared_story: PreparedStory) -> None:
                 unsafe_allow_html=True,
             )
 
-        form_key = f"question_form_{story.id}_{len(questions)}"
-        with st.form(form_key, clear_on_submit=True):
-            question = st.text_area(
+        with st.form(
+            f"question_form_{story.id}_{len(questions)}",
+            clear_on_submit=True,
+            border=False,
+        ):
+            question = st.text_input(
                 "Ask a question",
+                key=f"question_input_{story.id}_{len(questions)}",
                 placeholder="Type a question here",
                 label_visibility="collapsed",
-                height=88,
             )
-            submitted = st.form_submit_button("Ask AI", use_container_width=True)
+            submitted = st.form_submit_button("Submit question")
 
         if submitted and clean_text(question):
             provider = configured_ai_provider()
@@ -4270,9 +4328,15 @@ def render_story_questions(prepared_story: PreparedStory) -> None:
                     attempted_articles=1,
                 )
             except Exception as exc:
-                record_generation_issue(
-                    f"Skim could not answer that question: {clean_text(str(exc))[:180]}"
+                issue = f"Skim could not answer that question: {clean_text(str(exc))[:180]}"
+                record_generation_issue(issue)
+                questions.append(
+                    {
+                        "question": clean_text(question),
+                        "answer": issue,
+                    }
                 )
+                st.session_state.story_questions[story.id] = questions
             finally:
                 loading_slot.empty()
             st.rerun()
@@ -4658,8 +4722,8 @@ def batch_refreshed_label() -> str:
     refreshed_at = parse_iso_datetime(str(st.session_state.get("batch_refreshed_at", "")))
     if not refreshed_at:
         return ""
-    local_time = refreshed_at.astimezone()
-    formatted = local_time.strftime("%b %d, %Y at %I:%M %p %Z")
+    eastern_time = refreshed_at.astimezone(EASTERN_STANDARD_TIME)
+    formatted = eastern_time.strftime("%b %d, %Y at %I:%M %p %Z")
     return formatted.replace(" 0", " ").replace(" at 0", " at ")
 
 

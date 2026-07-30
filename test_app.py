@@ -468,6 +468,16 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertEqual(restored, ledger)
 
+    def test_batch_timestamp_is_displayed_in_est(self) -> None:
+        with patch.object(
+            app.st,
+            "session_state",
+            {"batch_refreshed_at": "2026-01-15T17:30:00+00:00"},
+        ):
+            label = app.batch_refreshed_label()
+
+        self.assertEqual(label, "Jan 15, 2026 at 12:30 PM EST")
+
     def test_story_question_answer_is_short_grounded_and_costed(self) -> None:
         evidence_text = " ".join(
             "Officials described the investigation and the evidence needed for the next decision."
