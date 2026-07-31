@@ -1231,7 +1231,7 @@ def page_style() -> None:
             }
 
             .st-key-headline_feed [class*="st-key-close_brief_"] {
-                margin-top: -0.42rem;
+                margin-top: 0.18rem;
             }
 
             .st-key-headline_feed [class*="st-key-close_brief_"] button {
