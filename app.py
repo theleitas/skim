@@ -510,6 +510,13 @@ def page_style() -> None:
                 --skim-card: #11100f;
                 --skim-accent: #f1c45b;
                 --skim-green: #77d2a1;
+                --skim-section-gap: 0.22rem;
+            }
+
+            *,
+            *::before,
+            *::after {
+                box-sizing: border-box;
             }
 
             .stApp {
@@ -565,7 +572,7 @@ def page_style() -> None:
 
             .headline-legend {
                 width: 100%;
-                margin: -0.12rem 0 0.72rem;
+                margin: 0 0 0.72rem;
             }
 
             .headline-updated {
@@ -606,7 +613,7 @@ def page_style() -> None:
                 gap: 1rem;
                 border-bottom: 1px solid #2f2b25;
                 padding: 0 0 0.85rem;
-                margin: -0.15rem 0 0.85rem;
+                margin: 0 0 0.85rem;
             }
 
             .ai-cost-latest {
@@ -938,15 +945,31 @@ def page_style() -> None:
                 border: 1px solid #373229;
                 border-radius: 8px;
                 padding: 0.85rem 0.9rem;
-                margin-bottom: 0.25rem;
+                margin: 0;
+                max-width: 100%;
+                overflow: hidden;
+                width: 100%;
             }
 
             .summary-grid b {
                 color: var(--skim-ink);
             }
 
+            .st-key-headline_feed [class*="st-key-summary_section_"] {
+                margin: 0 0 var(--skim-section-gap);
+                max-width: 100%;
+                width: 100%;
+            }
+
+            .st-key-headline_feed [class*="st-key-summary_section_"]
+            > div[data-testid="stVerticalBlock"] {
+                gap: 0 !important;
+            }
+
             .summary-field {
                 border-top: 1px solid #332f29;
+                min-width: 0;
+                overflow-wrap: anywhere;
                 padding-top: 0.62rem;
             }
 
@@ -964,7 +987,7 @@ def page_style() -> None:
                 border-radius: 8px;
                 box-sizing: border-box;
                 padding: 0.85rem 0.9rem;
-                margin: 0 0 0.25rem;
+                margin: 0 0 var(--skim-section-gap);
                 max-width: 100%;
                 width: 100%;
                 overflow: hidden;
@@ -999,7 +1022,7 @@ def page_style() -> None:
                     transparent
                 );
                 color: #eeeae3;
-                margin: 0.25rem 0 0.85rem;
+                margin: 0;
                 padding: 0.62rem 0.75rem;
             }
 
@@ -1170,8 +1193,11 @@ def page_style() -> None:
                 margin: 0.08rem 0.12rem 0.08rem 0;
                 font-size: 0.72rem;
                 line-height: 1.15;
+                max-width: 100%;
+                overflow-wrap: anywhere;
+                text-align: center;
                 text-decoration: none !important;
-                white-space: nowrap;
+                white-space: normal;
                 box-shadow: 0 0 7px color-mix(
                     in srgb,
                     var(--skim-category, var(--skim-accent)) 28%,
@@ -1185,6 +1211,8 @@ def page_style() -> None:
                 flex-wrap: wrap;
                 gap: 0.16rem;
                 margin-top: 0.46rem;
+                max-width: 100%;
+                min-width: 0;
             }
 
             .learn-more-label {
@@ -1210,6 +1238,12 @@ def page_style() -> None:
                 margin-top: 0;
             }
 
+            .st-key-headline_feed [class*="st-key-story_actions_"] {
+                margin: 0 0 var(--skim-section-gap);
+                max-width: 100%;
+                width: 100%;
+            }
+
             .st-key-headline_feed [class*="st-key-story_actions_"]
             [data-testid="stHorizontalBlock"]
             > [data-testid="stColumn"] {
@@ -1228,18 +1262,23 @@ def page_style() -> None:
                 height: 1.92rem;
                 padding: 0.18rem 0.35rem;
                 font-size: 0.72rem;
+                box-shadow: 0 0 5px color-mix(
+                    in srgb,
+                    var(--skim-category, var(--skim-accent)) 28%,
+                    transparent
+                ) !important;
             }
 
             .st-key-headline_feed [class*="st-key-close_brief_"] {
-                margin-top: 0.18rem;
+                margin: 0.08rem 0 0;
             }
 
             .st-key-headline_feed [class*="st-key-close_brief_"] button {
                 background: var(--skim-category, var(--skim-accent)) !important;
                 border-color: var(--skim-category, var(--skim-accent)) !important;
-                box-shadow: 0 0 14px color-mix(
+                box-shadow: 0 0 5px color-mix(
                     in srgb,
-                    var(--skim-category, var(--skim-accent)) 52%,
+                    var(--skim-category, var(--skim-accent)) 42%,
                     transparent
                 ) !important;
                 color: #000000 !important;
@@ -1257,7 +1296,7 @@ def page_style() -> None:
                 background: #0b0c0d;
                 border: 1px solid #30353a;
                 border-radius: 8px;
-                margin: 0 0 0.22rem;
+                margin: 0 0 var(--skim-section-gap);
                 padding: 0.7rem 0.75rem 0.1rem;
             }
 
@@ -1462,7 +1501,7 @@ def page_style() -> None:
                 color: #8f887e;
                 font-size: 0.7rem;
                 line-height: 1.3;
-                margin-top: -0.45rem;
+                margin-top: 0;
                 margin-bottom: 0.72rem;
             }
 
@@ -4924,7 +4963,8 @@ def render_story_details(prepared_story: PreparedStory) -> None:
             continue
         label_html = "" if label == "Learn More" else (f"<b>{html.escape(label)}:</b> " if label else "")
         rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
-    st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
+    with st.container(key=f"summary_section_{story.id}"):
+        st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
 
     if st.session_state.deep_analysis_loading_story_id == story.id:
         loading_slot = st.empty()
