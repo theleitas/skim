@@ -553,6 +553,32 @@ class ArticlePipelineTests(unittest.TestCase):
         )
         self.assertTrue(normalized["Learn More"].startswith("Learn more:"))
 
+    def test_learn_more_stays_with_summary_before_deep_analysis(self) -> None:
+        summary = {"Learn More": "Learn more: [Source](https://example.com)"}
+
+        owner, value = app.learn_more_placement(summary, None)
+
+        self.assertEqual(owner, "summary")
+        self.assertEqual(value, summary["Learn More"])
+
+    def test_learn_more_moves_to_deep_analysis_without_duplication(self) -> None:
+        summary = {"Learn More": "Learn more: [Summary](https://example.com/summary)"}
+        analysis = {"Learn More": "Learn more: [Deep](https://example.com/deep)"}
+
+        owner, value = app.learn_more_placement(summary, analysis)
+
+        self.assertEqual(owner, "analysis")
+        self.assertEqual(value, analysis["Learn More"])
+
+    def test_deep_analysis_inherits_summary_links_when_its_links_are_missing(self) -> None:
+        summary = {"Learn More": "Learn more: [Summary](https://example.com/summary)"}
+        analysis = {"Deeper analysis": "The AI provider could not complete this request."}
+
+        owner, value = app.learn_more_placement(summary, analysis)
+
+        self.assertEqual(owner, "analysis")
+        self.assertEqual(value, summary["Learn More"])
+
     def test_ai_cost_ledger_survives_a_file_round_trip(self) -> None:
         ledger = {
             "total_micros": 12345,

@@ -4791,7 +4791,20 @@ def split_legacy_research_links(analysis: dict[str, str]) -> dict[str, str]:
     return normalized
 
 
-def render_deep_analysis(prepared_story: PreparedStory) -> None:
+def learn_more_placement(
+    summary: dict[str, str],
+    analysis: dict[str, str] | None,
+) -> tuple[str, str]:
+    summary_value = str(summary.get("Learn More", ""))
+    if analysis:
+        return "analysis", str(analysis.get("Learn More") or summary_value)
+    return "summary", summary_value
+
+
+def render_deep_analysis(
+    prepared_story: PreparedStory,
+    learn_more: str = "",
+) -> None:
     story = prepared_story.ranked_story.story
     stored_analysis = st.session_state.deep_analyses.get(story.id)
     analysis = split_legacy_research_links(stored_analysis) if stored_analysis else None
@@ -4866,7 +4879,6 @@ def render_deep_analysis(prepared_story: PreparedStory) -> None:
                     unsafe_allow_html=True,
                 )
 
-        learn_more = analysis.get("Learn More")
         if learn_more:
             st.markdown(
                 '<div class="deep-summary-field deep-learn-more">'
@@ -4957,15 +4969,6 @@ def render_story_details(prepared_story: PreparedStory) -> None:
     summary = dict(prepared_story.card)
     display_headline = summary.pop("__headline")
 
-    rows = ""
-    for label, value in summary.items():
-        if label.startswith("__"):
-            continue
-        label_html = "" if label == "Learn More" else (f"<b>{html.escape(label)}:</b> " if label else "")
-        rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
-    with st.container(key=f"summary_section_{story.id}"):
-        st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
-
     if st.session_state.deep_analysis_loading_story_id == story.id:
         loading_slot = st.empty()
         loading_slot.markdown(
@@ -4991,7 +4994,25 @@ def render_story_details(prepared_story: PreparedStory) -> None:
             st.session_state.deep_analysis_loading_story_id = ""
             loading_slot.empty()
 
-    render_deep_analysis(prepared_story)
+    stored_analysis = st.session_state.deep_analyses.get(story.id)
+    analysis = split_legacy_research_links(stored_analysis) if stored_analysis else None
+    learn_more_owner, learn_more = learn_more_placement(summary, analysis)
+
+    rows = ""
+    for label, value in summary.items():
+        if label.startswith("__") or label == "Learn More":
+            continue
+        label_html = f"<b>{html.escape(label)}:</b> " if label else ""
+        rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
+    if learn_more_owner == "summary" and learn_more:
+        rows += (
+            '<div class="summary-field">'
+            f"{render_summary_value(learn_more)}</div>"
+        )
+    with st.container(key=f"summary_section_{story.id}"):
+        st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
+
+    render_deep_analysis(prepared_story, learn_more if learn_more_owner == "analysis" else "")
     render_story_questions(prepared_story)
 
     with st.container(key=f"story_actions_{story.id}"):
