@@ -916,6 +916,7 @@ def page_style() -> None:
                 grid-template-columns: minmax(0, 3fr) minmax(5.5rem, 1fr);
                 align-items: start;
                 gap: 0.75rem;
+                padding-bottom: 0.8rem;
                 width: 100%;
             }
 
@@ -1621,6 +1622,7 @@ def page_style() -> None:
                 .expanded-story-header {
                     grid-template-columns: minmax(0, 2.5fr) minmax(4.5rem, 1fr);
                     gap: 0.55rem;
+                    padding-bottom: 0.7rem;
                 }
 
                 .story-image {
