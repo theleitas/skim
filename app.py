@@ -1125,12 +1125,17 @@ def page_style() -> None:
                 margin: 0 !important;
             }
 
-            .research-trail-copy {
+            .further-research-label {
+                color: var(--skim-ink);
+                font-style: normal;
+                font-weight: 700;
                 overflow-wrap: anywhere;
             }
 
             .st-key-headline_feed [class*="st-key-research_row_"] .stButton {
                 display: inline !important;
+                max-width: 100%;
+                vertical-align: baseline;
                 width: auto !important;
             }
 
@@ -1152,8 +1157,12 @@ def page_style() -> None:
                 font-weight: 500;
                 line-height: inherit;
                 margin-left: 0.18em;
+                max-width: 100%;
+                overflow-wrap: anywhere;
+                text-align: left;
                 text-decoration: none !important;
                 vertical-align: baseline;
+                white-space: normal;
                 width: auto;
             }
 
@@ -4459,6 +4468,13 @@ def research_topic_from_analysis(analysis: dict[str, str]) -> str:
     return clean_text(strip_markdown_links(topic_text))
 
 
+def further_research_link_text(analysis: dict[str, str]) -> str:
+    topic = research_topic_from_analysis(analysis)
+    if topic and topic[-1:] not in ".!?":
+        return f"{topic}."
+    return topic
+
+
 def research_topic_brief(
     story: Story,
     evidence: ArticleEvidence,
@@ -4831,18 +4847,14 @@ def render_deep_analysis(
             st.markdown("".join(leading_fields), unsafe_allow_html=True)
 
         if research_topic:
-            research_value = str(analysis.get("Research trail", ""))
-            rendered_research = render_summary_value(research_value)
-            if clean_text(research_value)[-1:] not in ".!?":
-                rendered_research += "."
+            research_link_text = further_research_link_text(analysis)
             with st.container(key=f"research_row_{story.id}"):
                 st.markdown(
-                    '<span class="research-trail-copy"><b>Research trail:</b> '
-                    f"{rendered_research}&nbsp;</span>",
+                    '<span class="further-research-label">Further Research:</span>',
                     unsafe_allow_html=True,
                 )
                 summarize_research = st.button(
-                    "Summarize this research with AI.",
+                    research_link_text,
                     key=f"research-brief-{story.id}",
                     type="tertiary",
                 )

@@ -805,6 +805,13 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertEqual(topic, "Understand cancer-cluster methodology.")
 
+    def test_further_research_link_is_a_complete_topic_sentence(self) -> None:
+        analysis = {"__research_topic": "Understand cancer-cluster methodology"}
+
+        link_text = app.further_research_link_text(analysis)
+
+        self.assertEqual(link_text, "Understand cancer-cluster methodology.")
+
     def test_research_topic_brief_is_simple_and_tracks_openai_cost(self) -> None:
         evidence_text = " ".join(
             "Officials asked epidemiologists to review whether the reported cases exceed expectations."
