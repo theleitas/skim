@@ -569,6 +569,42 @@ class ArticlePipelineTests(unittest.TestCase):
             ["shared-cluster", "chip-cluster", "ukraine-cluster"],
         )
 
+    def test_headline_selection_reserves_the_strongest_story_in_each_category(self) -> None:
+        def ranked(
+            story_id: str,
+            title: str,
+            score: float,
+        ) -> app.RankedStory:
+            return app.RankedStory(
+                story=self.news_story(story_id, title, "Major News"),
+                cluster_key=f"{story_id}-cluster",
+                references=max(1, int(score // 100)),
+                topic_story_count=max(1, int(score // 100)),
+                score=score,
+            )
+
+        candidates = [
+            ranked("conflict-top", "Missile attack hits military base", 1_000),
+            ranked("conflict-next", "Drone strike damages weapons depot", 900),
+            ranked("world", "Global leaders meet for humanitarian aid summit", 100),
+            ranked("politics", "Senate votes on White House budget plan", 80),
+            ranked("sports", "NBA finals series reaches decisive game", 70),
+            ranked("entertainment", "Actor wins major film award", 60),
+            ranked("technology", "Artificial intelligence company launches new model", 50),
+            ranked("economy", "Central bank signals change in interest rates", 40),
+        ]
+
+        reserved = app.select_balanced_headlines(candidates, set(), limit=7)
+        filled = app.select_balanced_headlines(candidates, set(), limit=8)
+
+        self.assertEqual(
+            {app.story_category(item.story) for item in reserved},
+            set(app.CATEGORY_COLORS),
+        )
+        self.assertIn("conflict-top", {item.story.id for item in reserved})
+        self.assertNotIn("conflict-next", {item.story.id for item in reserved})
+        self.assertEqual(filled[-1].story.id, "conflict-next")
+
     def test_batch_timestamp_is_displayed_in_est(self) -> None:
         with patch.object(
             app.st,

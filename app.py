@@ -5298,6 +5298,55 @@ def append_keyword_headlines(
     return combined
 
 
+def headline_popularity_key(item: RankedStory) -> tuple[float, int, int, float]:
+    return (
+        item.score,
+        item.references,
+        item.topic_story_count,
+        ranked_story_published_timestamp(item),
+    )
+
+
+def select_balanced_headlines(
+    ranked_stories: Sequence[RankedStory],
+    blocked_cluster_keys: set[str],
+    limit: int = BATCH_SIZE,
+) -> list[RankedStory]:
+    if limit <= 0:
+        return []
+    eligible = [
+        item
+        for item in ranked_stories
+        if item.story.group != "Custom" and item.cluster_key not in blocked_cluster_keys
+    ]
+    selected: list[RankedStory] = []
+    selected_cluster_keys: set[str] = set()
+
+    for category in CATEGORY_COLORS:
+        category_candidates = [
+            item
+            for item in eligible
+            if item.cluster_key not in selected_cluster_keys
+            and story_category(item.story) == category
+        ]
+        if not category_candidates:
+            continue
+        strongest = max(category_candidates, key=headline_popularity_key)
+        selected.append(strongest)
+        selected_cluster_keys.add(strongest.cluster_key)
+        if len(selected) >= limit:
+            return selected
+
+    for item in sorted(eligible, key=headline_popularity_key, reverse=True):
+        if len(selected) >= limit:
+            break
+        if item.cluster_key in selected_cluster_keys:
+            continue
+        selected.append(item)
+        selected_cluster_keys.add(item.cluster_key)
+    return selected
+
+
 def build_headline_batch(
     ranked_stories: list[RankedStory],
     keyword_rankings: dict[str, list[RankedStory]] | None = None,
@@ -5309,16 +5358,7 @@ def build_headline_batch(
         return sort_headlines_by_age(current)
 
     shown_cluster_keys = set(st.session_state.shown_cluster_history)
-    batch: list[RankedStory] = []
-    used_cluster_keys: set[str] = set()
-    base_rankings = [item for item in ranked_stories if item.story.group != "Custom"]
-    for item in base_rankings:
-        if len(batch) >= BATCH_SIZE:
-            break
-        if ranked_item_is_available(item, shown_cluster_keys | used_cluster_keys):
-            batch.append(item)
-            used_cluster_keys.add(item.cluster_key)
-
+    batch = select_balanced_headlines(ranked_stories, shown_cluster_keys)
     batch = append_keyword_headlines(batch, keyword_rankings, shown_cluster_keys)
     batch = sort_headlines_by_age(batch)
     refresh_key = utc_now().isoformat()
