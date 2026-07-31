@@ -179,6 +179,49 @@ class ArticlePipelineTests(unittest.TestCase):
             {"google", "direct"},
         )
 
+    def test_google_news_cluster_exposes_each_underlying_publisher(self) -> None:
+        cluster_html = """
+        <ol>
+          <li>
+            <a href="https://news.google.com/rss/articles/bbc">Board of Peace deal explained</a>
+            <font color="#6f6f6f">BBC</font>
+          </li>
+          <li>
+            <a href="https://news.google.com/rss/articles/cnn">What the Board of Peace does</a>
+            <font color="#6f6f6f">CNN</font>
+          </li>
+        </ol>
+        """
+
+        links = app.google_news_cluster_links(cluster_html)
+
+        self.assertEqual(
+            links,
+            (
+                (
+                    "Board of Peace deal explained",
+                    "https://news.google.com/rss/articles/bbc",
+                    "BBC",
+                ),
+                (
+                    "What the Board of Peace does",
+                    "https://news.google.com/rss/articles/cnn",
+                    "CNN",
+                ),
+            ),
+        )
+
+    def test_briefing_search_adds_the_subject_of_an_explainer_question(self) -> None:
+        phrases = app.briefing_search_phrases(
+            "What Is the Board of Peace? The Trump-Backed Group, Explained"
+        )
+
+        self.assertIn('"Board of Peace"', phrases)
+        self.assertIn(
+            '"What Is the Board of Peace? The Trump-Backed Group, Explained"',
+            phrases,
+        )
+
     def test_briefing_falls_through_to_another_article_in_the_cluster(self) -> None:
         blocked_story = self.news_story(
             "blocked",
@@ -223,6 +266,66 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertEqual(prepared.evidence.url, readable_story.link)
         self.assertEqual(prepared.article_story, readable_story)
         self.assertEqual(cost, 0.02)
+        self.assertEqual(fetch.call_count, 2)
+
+    def test_briefing_searches_other_publishers_when_stored_articles_are_blocked(self) -> None:
+        blocked_story = self.news_story(
+            "blocked-explainer",
+            "What Is the Board of Peace? The Trump-Backed Group, Explained",
+            "NYT Top Stories",
+        )
+        alternate_story = replace(
+            self.news_story(
+                "readable-explainer",
+                "Board of Peace deal and international role explained",
+                "BBC",
+                group="Aggregator",
+            ),
+            link="https://news.google.com/rss/articles/readable-explainer",
+        )
+        ranked = app.RankedStory(
+            story=blocked_story,
+            cluster_key="board-of-peace",
+            references=12,
+            topic_story_count=17,
+            score=1.0,
+            article_candidates=(blocked_story,),
+        )
+        evidence_text = " ".join(
+            "The Board of Peace is an international group created to coordinate a Gaza agreement."
+            for _ in range(18)
+        )
+        evidence = app.ArticleEvidence(
+            url="https://www.bbc.com/news/articles/board-of-peace",
+            title=alternate_story.title,
+            text=evidence_text,
+            word_count=len(evidence_text.split()),
+        )
+
+        with (
+            patch.object(
+                app,
+                "fetch_google_news_briefing_candidates",
+                return_value=(alternate_story,),
+            ) as discover,
+            patch.object(
+                app,
+                "fetch_article_evidence",
+                side_effect=[None, evidence],
+            ) as fetch,
+            patch.object(
+                app,
+                "smart_summarize",
+                return_value=app.SummaryAttempt(card=self.good_card(), ai_cost=0.02),
+            ),
+        ):
+            prepared, cost = app.prepare_ranked_story(ranked, detail=3, refresh_key="test")
+
+        self.assertIsNotNone(prepared)
+        self.assertEqual(prepared.article_story, alternate_story)
+        self.assertEqual(prepared.evidence.url, evidence.url)
+        self.assertEqual(cost, 0.02)
+        discover.assert_called_once_with(blocked_story.title, blocked_story.topics)
         self.assertEqual(fetch.call_count, 2)
 
     def test_briefing_uses_one_publishers_feed_text_when_page_is_blocked(self) -> None:

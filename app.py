@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
@@ -35,7 +36,9 @@ MIN_ARTICLE_WORDS = 120
 MIN_ARTICLE_SENTENCES = 3
 MIN_FEED_EVIDENCE_WORDS = 35
 MIN_FEED_EVIDENCE_SENTENCES = 2
-MAX_ARTICLE_CANDIDATES = 5
+MAX_ARTICLE_CANDIDATES = 12
+MAX_BRIEFING_SEARCH_RESULTS = 8
+MAX_BRIEFING_SEARCH_CANDIDATES = 12
 MAX_BASE_CANDIDATES = 40
 MAX_KEYWORD_CANDIDATES = 10
 MIN_SUMMARY_WORDS = 18
@@ -55,7 +58,7 @@ GDELT_QUERY = (
 )
 OPENAI_SUMMARY_MODEL = "gpt-5.6-terra"
 OPENAI_DEEP_MODEL = "gpt-5.6-terra"
-AI_SUMMARY_PROMPT_VERSION = "grounded-article-v3-single-source-fallback"
+AI_SUMMARY_PROMPT_VERSION = "grounded-article-v4-multi-source-retrieval"
 GEMINI_SUMMARY_MODEL = "gemini-2.5-flash"
 GEMINI_DEEP_MODEL = "gemini-2.5-pro"
 GROQ_SUMMARY_MODEL = "llama-3.3-70b-versatile"
@@ -1677,6 +1680,78 @@ def feed_entry_summary(parent: ET.Element) -> str:
     return sanitize_article_text(" ".join(parts), max_words=240)
 
 
+class GoogleNewsClusterParser(HTMLParser):
+    """Extract the publisher links Google News nests inside one RSS item."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str, str]] = []
+        self.in_item = False
+        self.in_link = False
+        self.in_source = False
+        self.href = ""
+        self.title_parts: list[str] = []
+        self.source_parts: list[str] = []
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        attributes = dict(attrs)
+        if tag == "li":
+            self.in_item = True
+            self.href = ""
+            self.title_parts = []
+            self.source_parts = []
+        elif self.in_item and tag == "a":
+            self.in_link = True
+            self.href = str(attributes.get("href") or "").strip()
+        elif self.in_item and tag == "font":
+            self.in_source = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a":
+            self.in_link = False
+        elif tag == "font":
+            self.in_source = False
+        elif tag == "li":
+            title = clean_text(" ".join(self.title_parts))
+            source = clean_text(" ".join(self.source_parts))
+            if title and self.href.startswith(("https://", "http://")):
+                self.links.append((title, self.href, source))
+            self.in_item = False
+            self.in_link = False
+            self.in_source = False
+
+    def handle_data(self, data: str) -> None:
+        if self.in_link:
+            self.title_parts.append(data)
+        elif self.in_source:
+            self.source_parts.append(data)
+
+
+def google_news_cluster_links(summary_html: str) -> tuple[tuple[str, str, str], ...]:
+    if not summary_html:
+        return ()
+    parser = GoogleNewsClusterParser()
+    try:
+        parser.feed(summary_html)
+        parser.close()
+    except (ValueError, TypeError):
+        return ()
+
+    unique_links: list[tuple[str, str, str]] = []
+    seen_urls: set[str] = set()
+    for title, url, source in parser.links:
+        url_key = normalized_story_url(url)
+        if not url_key or url_key in seen_urls:
+            continue
+        seen_urls.add(url_key)
+        unique_links.append((title, url, source))
+    return tuple(unique_links)
+
+
 def child_link(parent: ET.Element) -> str:
     for child in parent:
         if local_name(child.tag) == "link":
@@ -2029,6 +2104,155 @@ def keyword_news_source(keyword: str) -> NewsSource:
         group="Custom",
         topics=("Custom",),
     )
+
+
+def google_news_publisher_name(value: str) -> str:
+    publisher = clean_text(value)
+    if not publisher:
+        return "Google News publisher"
+    if " " not in publisher and "." in publisher:
+        return source_name_from_domain(publisher)
+    return publisher
+
+
+def briefing_candidate_relevance(target_title: str, candidate_title: str) -> tuple[int, int, float]:
+    target_normalized = normalized_story_text(clean_headline_source(target_title))
+    candidate_normalized = normalized_story_text(clean_headline_source(candidate_title))
+    exact_match = int(target_normalized == candidate_normalized)
+    target_terms = set(significant_words(target_title))
+    candidate_terms = set(significant_words(candidate_title))
+    shared_terms = target_terms.intersection(candidate_terms)
+    smaller_title_size = max(1, min(len(target_terms), len(candidate_terms)))
+    return exact_match, len(shared_terms), len(shared_terms) / smaller_title_size
+
+
+def briefing_candidate_is_relevant(target_title: str, candidate_title: str) -> bool:
+    exact_match, shared_count, smaller_title_coverage = briefing_candidate_relevance(
+        target_title,
+        candidate_title,
+    )
+    return bool(exact_match or (shared_count >= 2 and smaller_title_coverage >= 0.3))
+
+
+def briefing_search_phrases(title: str) -> tuple[str, ...]:
+    clean_title = clean_headline_source(title)
+    phrases = [f'"{clean_title}"']
+
+    question_clause = clean_text(clean_title.split("?", 1)[0])
+    question_subject = re.sub(
+        r"(?i)^(?:what|who|where|when|why|how)\s+"
+        r"(?:(?:is|are|was|were|does|do|did|can|will)\s+)?"
+        r"(?:(?:the|a|an)\s+)?",
+        "",
+        question_clause,
+    ).strip()
+    if (
+        len(significant_words(question_subject)) >= 2
+        and normalized_story_text(question_subject) != normalized_story_text(clean_title)
+    ):
+        phrases.append(f'"{question_subject}"')
+
+    meaningful_words = [
+        word
+        for word in re.findall(r"[A-Za-z0-9']+", clean_title)
+        if word.lower() not in STOPWORDS
+    ]
+    broader_subject = " ".join(meaningful_words[:8])
+    if broader_subject and normalized_story_text(broader_subject) != normalized_story_text(clean_title):
+        phrases.append(broader_subject)
+    return tuple(dict.fromkeys(phrases))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_google_news_briefing_candidates(
+    title: str,
+    topics: tuple[str, ...],
+) -> tuple[Story, ...]:
+    clean_title = clean_headline_source(title)
+    candidates: list[Story] = []
+    for search_phrase in briefing_search_phrases(clean_title):
+        query = urllib.parse.urlencode(
+            {
+                "q": search_phrase,
+                "hl": "en-US",
+                "gl": "US",
+                "ceid": "US:en",
+            }
+        )
+        request = urllib.request.Request(
+            f"https://news.google.com/rss/search?{query}",
+            headers=REQUEST_HEADERS,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=FEED_TIMEOUT_SECONDS) as response:
+                root = ET.fromstring(response.read())
+        except (
+            ET.ParseError,
+            urllib.error.URLError,
+            TimeoutError,
+            ValueError,
+            OSError,
+        ):
+            continue
+
+        entries = [node for node in root.iter() if local_name(node.tag) in {"item", "entry"}]
+        for entry in entries[:MAX_BRIEFING_SEARCH_RESULTS]:
+            published = parse_date(
+                child_text(entry, ("pubDate", "published", "updated", "date"))
+            )
+            summary_html = child_raw_text(
+                entry,
+                ("description", "summary", "content", "encoded"),
+            )
+            nested_links = google_news_cluster_links(summary_html)
+            if nested_links:
+                entry_candidates = nested_links
+            else:
+                entry_candidates = (
+                    (
+                        child_text(entry, ("title",)),
+                        child_link(entry),
+                        child_text(entry, ("source",)),
+                    ),
+                )
+
+            for candidate_title, candidate_link, publisher in entry_candidates:
+                if not candidate_title or not candidate_link:
+                    continue
+                if not briefing_candidate_is_relevant(clean_title, candidate_title):
+                    continue
+                source_name = google_news_publisher_name(publisher)
+                if outlet_identity(source_name) in {
+                    "facebook",
+                    "instagram",
+                    "tiktok",
+                    "x",
+                    "youtube",
+                }:
+                    continue
+                candidates.append(
+                    Story(
+                        id=stable_id(source_name, candidate_title, candidate_link),
+                        source=source_name,
+                        group="Aggregator",
+                        title=candidate_title,
+                        link=candidate_link,
+                        summary_text="",
+                        published=published,
+                        topics=topics,
+                    )
+                )
+
+    candidates = deduplicate_stories(candidates)
+    candidates.sort(
+        key=lambda candidate: (
+            briefing_candidate_relevance(clean_title, candidate.title),
+            -story_age_hours(candidate),
+            int(is_major_outlet(candidate)),
+        ),
+        reverse=True,
+    )
+    return tuple(candidates[:MAX_BRIEFING_SEARCH_CANDIDATES])
 
 
 def fetch_stories(
@@ -2465,6 +2689,7 @@ def set_ai_cost_total(total_dollars: float, reset_history: bool = False) -> None
 
 def complete_story_refresh() -> None:
     fetch_source.clear()
+    fetch_google_news_briefing_candidates.clear()
     resolve_article_url.clear()
     fetch_article_evidence.clear()
     st.session_state.current_cluster_keys = []
@@ -3586,7 +3811,8 @@ def ai_summary_cached(
     prompt_version: str,
     refresh_key: str,
     story_id: str,
-    title: str,
+    selected_title: str,
+    publisher_title: str,
     source: str,
     group: str,
     rss_summary: str,
@@ -3601,7 +3827,8 @@ def ai_summary_cached(
         PUBLISHER: {source}
         SOURCE TYPE: {group}
         TOPICS: {", ".join(topics)}
-        PUBLISHER HEADLINE: {clean_headline_source(title)}
+        SELECTED HEADLINE: {clean_headline_source(selected_title)}
+        EVIDENCE PUBLISHER HEADLINE: {clean_headline_source(publisher_title)}
         RSS DESCRIPTION: {clean_text(rss_summary) or "Not available."}
         PUBLISHER URL: {article_url}
         DESIRED DETAIL: {detail}/5
@@ -3617,6 +3844,11 @@ def ai_summary_cached(
         writing. The current event facts must come from that body. You may use reliable
         general knowledge only to explain established background or cautious implications,
         never to add unreported current-event facts.
+
+        Center the brief on SELECTED HEADLINE, which is the subject the reader opened. When the
+        evidence comes from another publisher with a different headline, use only the facts and
+        background that directly illuminate the selected subject. Do not merge separate events
+        or imply the evidence publisher reported a detail that is absent from ARTICLE_BODY.
 
         READABILITY:
         {summary_readability_guidance(plain_language)}
@@ -3663,7 +3895,8 @@ def ai_summary_repair_cached(
     prompt_version: str,
     refresh_key: str,
     story_id: str,
-    title: str,
+    selected_title: str,
+    publisher_title: str,
     source: str,
     article_text: str,
     draft_json: str,
@@ -3673,7 +3906,8 @@ def ai_summary_repair_cached(
     prompt = textwrap.dedent(
         f"""
         PUBLISHER: {source}
-        PUBLISHER HEADLINE: {clean_headline_source(title)}
+        SELECTED HEADLINE: {clean_headline_source(selected_title)}
+        EVIDENCE PUBLISHER HEADLINE: {clean_headline_source(publisher_title)}
 
         <ARTICLE_BODY>
         {article_text}
@@ -4050,6 +4284,7 @@ def smart_summarize(
             AI_SUMMARY_PROMPT_VERSION,
             refresh_key,
             story.id,
+            story.title,
             source_story.title,
             source_story.source,
             source_story.group,
@@ -4086,6 +4321,7 @@ def smart_summarize(
                 AI_SUMMARY_PROMPT_VERSION,
                 refresh_key,
                 story.id,
+                story.title,
                 source_story.title,
                 source_story.source,
                 evidence.text,
@@ -5179,14 +5415,21 @@ def prepare_ranked_story(
     refresh_key: str,
     plain_language: bool = True,
 ) -> tuple[PreparedStory | None, float]:
-    candidates = item.article_candidates or (item.story,)
+    stored_candidates = list(item.article_candidates or (item.story,))
+    primary_candidates: list[Story] = [item.story]
+    primary_candidates.extend(
+        candidate for candidate in stored_candidates if candidate.id != item.story.id
+    )
+    primary_candidates = deduplicate_stories(primary_candidates)
     total_ai_cost = 0.0
-    for candidate in candidates[:MAX_ARTICLE_CANDIDATES]:
+
+    def try_candidate(candidate: Story) -> PreparedStory | None:
+        nonlocal total_ai_cost
         evidence = fetch_article_evidence(candidate.link, candidate.title)
         if not evidence:
             evidence = feed_story_evidence(candidate)
         if not evidence:
-            continue
+            return None
         attempt = smart_summarize(
             item.story,
             evidence,
@@ -5197,16 +5440,37 @@ def prepare_ranked_story(
         )
         total_ai_cost += attempt.ai_cost
         if not attempt.card:
-            continue
-        return (
-            PreparedStory(
-                ranked_story=item,
-                evidence=evidence,
-                card=attempt.card,
-                article_story=candidate,
-            ),
-            total_ai_cost,
+            return None
+        return PreparedStory(
+            ranked_story=item,
+            evidence=evidence,
+            card=attempt.card,
+            article_story=candidate,
         )
+
+    # Try the selected publisher and two strong cluster alternatives first. If those
+    # pages are blocked, fan out through the publishers hidden in Google News.
+    first_pass = primary_candidates[:3]
+    for candidate in first_pass:
+        prepared = try_candidate(candidate)
+        if prepared:
+            return prepared, total_ai_cost
+
+    discovered_candidates = fetch_google_news_briefing_candidates(
+        item.story.title,
+        item.story.topics,
+    )
+    fallback_candidates = deduplicate_stories(
+        [*discovered_candidates, *primary_candidates[3:]]
+    )
+    attempted_urls = {normalized_story_url(candidate.link) for candidate in first_pass}
+    for candidate in fallback_candidates:
+        if normalized_story_url(candidate.link) in attempted_urls:
+            continue
+        attempted_urls.add(normalized_story_url(candidate.link))
+        prepared = try_candidate(candidate)
+        if prepared:
+            return prepared, total_ai_cost
     return None, total_ai_cost
 
 
