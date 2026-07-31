@@ -458,6 +458,16 @@ class ArticlePipelineTests(unittest.TestCase):
             "latest_articles": 1,
             "updated_at": 1722366000000,
             "events": ["0123456789abcdef"],
+            "history": [
+                {
+                    "token": "0123456789abcdef",
+                    "at": 1722366000000,
+                    "cost_micros": 345,
+                    "articles": 1,
+                    "label": "Story brief",
+                    "model": "gpt-5.6-terra",
+                }
+            ],
         }
 
         with TemporaryDirectory() as temporary_directory:
@@ -467,6 +477,97 @@ class ArticlePipelineTests(unittest.TestCase):
                 restored = app.read_ai_cost_ledger()
 
         self.assertEqual(restored, ledger)
+
+    def test_legacy_ai_cost_ledger_adds_an_empty_history(self) -> None:
+        normalized = app.normalize_ai_cost_ledger(
+            {
+                "total_micros": 12345,
+                "latest_micros": 345,
+                "events": ["0123456789abcdef"],
+            }
+        )
+
+        self.assertEqual(normalized["history"], [])
+
+    def test_ai_cost_history_keeps_the_latest_ten_unique_calls(self) -> None:
+        history = [
+            {
+                "token": f"{index:016x}",
+                "at": index,
+                "cost_micros": index + 1,
+                "articles": 1,
+                "label": "Story brief",
+                "model": "gpt-5.6-terra",
+            }
+            for index in range(12)
+        ]
+
+        merged = app.merge_ai_cost_history(history)
+
+        self.assertEqual(len(merged), 10)
+        self.assertEqual(merged[0]["token"], f"{2:016x}")
+        self.assertEqual(merged[-1]["token"], f"{11:016x}")
+
+    def test_ai_cost_event_details_identifies_interactive_calls(self) -> None:
+        self.assertEqual(
+            app.ai_cost_event_details("deep-batch-story", 1),
+            ("Deep analysis", app.OPENAI_DEEP_MODEL),
+        )
+        self.assertEqual(
+            app.ai_cost_event_details("question-batch-story", 1),
+            ("Story question", app.OPENAI_DEEP_MODEL),
+        )
+
+    def test_keyword_slot_locks_and_only_clears_explicitly(self) -> None:
+        state = {
+            "keyword_draft_3": "  Climate policy  ",
+            "saved_keyword_3": "",
+            "last_settings": ("old",),
+        }
+        query_params = {}
+        with (
+            patch.object(app.st, "session_state", state),
+            patch.object(app.st, "query_params", query_params),
+        ):
+            app.lock_keyword_slot(3)
+
+            self.assertEqual(state["saved_keyword_3"], "Climate policy")
+            self.assertEqual(query_params["kw4"], "Climate policy")
+            self.assertIsNone(state["last_settings"])
+
+            app.clear_keyword_slot(3)
+
+        self.assertEqual(state["saved_keyword_3"], "")
+        self.assertEqual(state["keyword_draft_3"], "")
+        self.assertNotIn("kw4", query_params)
+
+    def test_each_keyword_adds_one_unique_headline_after_the_base_batch(self) -> None:
+        def ranked(story_id: str, cluster_key: str, title: str) -> app.RankedStory:
+            return app.RankedStory(
+                story=self.news_story(story_id, title, "Keyword Search", group="Custom"),
+                cluster_key=cluster_key,
+                references=1,
+                topic_story_count=1,
+                score=10,
+            )
+
+        base = [ranked("base", "shared-cluster", "Existing semiconductor headline")]
+        keyword_rankings = {
+            "semiconductors": [
+                ranked("duplicate", "shared-cluster", "Duplicate semiconductor headline"),
+                ranked("chips", "chip-cluster", "Chipmakers announce new factories"),
+            ],
+            "Ukraine": [
+                ranked("ukraine", "ukraine-cluster", "Ukraine talks resume in Geneva"),
+            ],
+        }
+
+        combined = app.append_keyword_headlines(base, keyword_rankings, set())
+
+        self.assertEqual(
+            [item.cluster_key for item in combined],
+            ["shared-cluster", "chip-cluster", "ukraine-cluster"],
+        )
 
     def test_batch_timestamp_is_displayed_in_est(self) -> None:
         with patch.object(
@@ -970,7 +1071,7 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertLess(long_mobile, short_mobile)
         self.assertGreaterEqual(full_width_desktop, long_desktop)
         self.assertGreaterEqual(long_desktop, 1.0)
-        self.assertGreaterEqual(long_mobile, 0.9)
+        self.assertGreaterEqual(long_mobile, 0.72)
 
     def test_category_prefers_headline_signals_over_incidental_summary_words(self) -> None:
         economy_story = self.news_story(

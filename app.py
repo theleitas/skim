@@ -76,7 +76,9 @@ AI_COST_QUERY_LATEST_ARTICLES = "aiCostLatestArticles"
 AI_COST_QUERY_LAST_BATCH = "aiCostBatch"
 AI_COST_QUERY_EVENTS = "aiCostEvents"
 AI_COST_QUERY_UPDATED = "aiCostUpdated"
+AI_COST_QUERY_HISTORY = "aiCostHistory"
 AI_COST_MAX_RECORDED_EVENTS = 128
+AI_COST_HISTORY_LIMIT = 10
 AI_COST_LEDGER_PATH = Path(__file__).with_name(".skim_ai_cost_ledger.json")
 AI_COST_BROWSER_STORAGE_KEY = "skim-ai-cost-ledger-v2"
 AI_COST_LEDGER_LOCK = threading.Lock()
@@ -558,6 +560,42 @@ def page_style() -> None:
                 white-space: nowrap;
             }
 
+            .headline-legend {
+                width: 100%;
+                margin: -0.12rem 0 0.72rem;
+            }
+
+            .headline-updated {
+                color: #8d96a3;
+                font-size: 0.68rem;
+                line-height: 1.2;
+                margin-bottom: 0.42rem;
+                text-align: right;
+            }
+
+            .category-legend {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.3rem;
+                width: 100%;
+            }
+
+            .category-legend-pill {
+                display: inline-flex;
+                align-items: center;
+                min-height: 1.35rem;
+                border-radius: 999px;
+                background: var(--legend-color);
+                box-shadow: 0 0 8px color-mix(in srgb, var(--legend-color) 45%, transparent);
+                color: #000000;
+                font-size: 0.62rem;
+                font-weight: 850;
+                line-height: 1;
+                padding: 0.22rem 0.5rem;
+                text-transform: uppercase;
+                white-space: nowrap;
+            }
+
             .ai-cost-strip {
                 display: grid;
                 grid-template-columns: minmax(0, 1fr) auto;
@@ -632,6 +670,7 @@ def page_style() -> None:
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.story-meta)
             > div[data-testid="stVerticalBlock"] {
+                gap: 0.28rem !important;
                 padding-top: 0.4rem;
                 padding-bottom: 0.45rem;
             }
@@ -847,7 +886,7 @@ def page_style() -> None:
             .story-title {
                 font-size: var(--story-title-size, 1.575rem) !important;
                 line-height: 1.14 !important;
-                margin: 0 0 0.55rem 0 !important;
+                margin: 0 !important;
                 color: var(--skim-ink);
                 max-width: 34rem;
                 display: -webkit-box;
@@ -859,12 +898,22 @@ def page_style() -> None:
 
             .story-title-full {
                 max-width: none;
+                margin-bottom: 0.15rem !important;
+            }
+
+            .expanded-story-header {
+                display: grid;
+                grid-template-columns: minmax(0, 3fr) minmax(5.5rem, 1fr);
+                align-items: start;
+                gap: 0.75rem;
+                width: 100%;
             }
 
             .story-image {
                 display: block;
                 width: 100%;
                 aspect-ratio: 4 / 3;
+                max-height: 7.5rem;
                 object-fit: cover;
                 border: 0;
                 border-radius: 12px;
@@ -872,7 +921,7 @@ def page_style() -> None:
 
             .headline-brief-divider {
                 border-top: 1px solid #332f29;
-                margin: 0.7rem 0 0.72rem;
+                margin: 0.22rem 0 0.32rem;
             }
 
             .summary-grid {
@@ -886,7 +935,7 @@ def page_style() -> None:
                 border: 1px solid #373229;
                 border-radius: 8px;
                 padding: 0.85rem 0.9rem;
-                margin-bottom: 0.95rem;
+                margin-bottom: 0.25rem;
             }
 
             .summary-grid b {
@@ -910,8 +959,11 @@ def page_style() -> None:
                 background: #171512;
                 border: 1px solid #373229;
                 border-radius: 8px;
+                box-sizing: border-box;
                 padding: 0.85rem 0.9rem;
-                margin-bottom: 0.95rem;
+                margin: 0 0 0.25rem;
+                max-width: 100%;
+                width: 100%;
                 overflow: hidden;
             }
 
@@ -1017,6 +1069,15 @@ def page_style() -> None:
 
             .deep-summary-field b {
                 color: var(--skim-ink);
+            }
+
+            .deep-learn-more {
+                padding-bottom: 0.2rem;
+            }
+
+            .deep-learn-more .learn-more-row {
+                margin-top: 0;
+                max-width: 100%;
             }
 
             .st-key-headline_feed [class*="st-key-research_row_"] {
@@ -1143,7 +1204,7 @@ def page_style() -> None:
                 display: grid !important;
                 grid-template-columns: repeat(3, minmax(0, 1fr));
                 gap: 0.34rem !important;
-                margin-top: 0.15rem;
+                margin-top: 0;
             }
 
             .st-key-headline_feed [class*="st-key-story_actions_"]
@@ -1167,18 +1228,33 @@ def page_style() -> None:
             }
 
             .st-key-headline_feed [class*="st-key-close_brief_"] {
-                margin-top: -0.5rem;
+                margin-top: -0.42rem;
             }
 
             .st-key-headline_feed [class*="st-key-close_brief_"] button {
+                background: var(--skim-category, var(--skim-accent)) !important;
+                border-color: var(--skim-category, var(--skim-accent)) !important;
+                box-shadow: 0 0 14px color-mix(
+                    in srgb,
+                    var(--skim-category, var(--skim-accent)) 52%,
+                    transparent
+                ) !important;
+                color: #000000 !important;
+                font-weight: 800;
                 width: 100%;
+            }
+
+            .st-key-headline_feed [class*="st-key-close_brief_"] button:hover,
+            .st-key-headline_feed [class*="st-key-close_brief_"] button:focus {
+                filter: brightness(1.08);
+                color: #000000 !important;
             }
 
             .st-key-headline_feed [class*="st-key-story_questions_"] {
                 background: #0b0c0d;
                 border: 1px solid #30353a;
                 border-radius: 8px;
-                margin: 0 0 0.85rem;
+                margin: 0 0 0.22rem;
                 padding: 0.7rem 0.75rem 0.1rem;
             }
 
@@ -1228,13 +1304,155 @@ def page_style() -> None:
             }
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.st-key-load-more-headlines) {
-                margin-bottom: 1.35rem;
+                margin: 0.3rem 0 1.5rem;
+            }
+
+            .st-key-load-more-headlines button {
+                min-height: 2.6rem;
+                height: 2.6rem;
+                border: 2px solid transparent !important;
+                background:
+                    linear-gradient(#020303, #020303) padding-box,
+                    linear-gradient(
+                        90deg,
+                        #39ff14,
+                        #ff4f81,
+                        #00e5ff,
+                        #ccff00,
+                        #ff7a00,
+                        #bb86fc,
+                        #ffe600
+                    ) border-box !important;
+                box-shadow:
+                    0 0 9px rgba(57, 255, 20, 0.22),
+                    0 0 13px rgba(0, 229, 255, 0.18),
+                    0 0 17px rgba(255, 79, 129, 0.16) !important;
+                color: #f4f4f4 !important;
+                font-size: 0.82rem;
+                font-weight: 750;
+            }
+
+            .st-key-load-more-headlines button:hover {
+                background:
+                    linear-gradient(#0b0c0d, #0b0c0d) padding-box,
+                    linear-gradient(
+                        90deg,
+                        #39ff14,
+                        #ff4f81,
+                        #00e5ff,
+                        #ccff00,
+                        #ff7a00,
+                        #bb86fc,
+                        #ffe600
+                    ) border-box !important;
+                color: #ffffff !important;
+                filter: brightness(1.1);
             }
 
             .admin-lock-copy {
                 color: var(--skim-muted);
                 font-size: 0.82rem;
                 margin-bottom: 0.55rem;
+            }
+
+            [class*="st-key-keyword_slot_"] {
+                min-height: 2.3rem;
+                border: 1px solid #353a42;
+                border-radius: 6px;
+                background: #050607;
+                box-sizing: border-box;
+                padding: 0.18rem 0.24rem;
+            }
+
+            [class*="st-key-keyword_slot_"]:has(.keyword-chip-text) {
+                --keyword-color: #39ff14;
+                border-color: color-mix(in srgb, var(--keyword-color) 72%, #353a42);
+                background: color-mix(in srgb, var(--keyword-color) 10%, #050607);
+                box-shadow: 0 0 9px color-mix(in srgb, var(--keyword-color) 24%, transparent);
+            }
+
+            [class*="st-key-keyword_slot_"]:has(.keyword-color-1),
+            [class*="st-key-keyword_slot_"]:has(.keyword-color-8) { --keyword-color: #ff4f81; }
+            [class*="st-key-keyword_slot_"]:has(.keyword-color-2) { --keyword-color: #00e5ff; }
+            [class*="st-key-keyword_slot_"]:has(.keyword-color-3) { --keyword-color: #ccff00; }
+            [class*="st-key-keyword_slot_"]:has(.keyword-color-4) { --keyword-color: #ff7a00; }
+            [class*="st-key-keyword_slot_"]:has(.keyword-color-5) { --keyword-color: #bb86fc; }
+            [class*="st-key-keyword_slot_"]:has(.keyword-color-6) { --keyword-color: #ffe600; }
+            [class*="st-key-keyword_slot_"]:has(.keyword-color-7) { --keyword-color: #39ff14; }
+
+            [class*="st-key-keyword_slot_"] > div[data-testid="stVerticalBlock"] {
+                gap: 0 !important;
+            }
+
+            [class*="st-key-keyword_slot_"] input {
+                min-height: 1.85rem !important;
+                height: 1.85rem !important;
+                border: 0 !important;
+                background: transparent !important;
+                font-size: 0.72rem !important;
+            }
+
+            .keyword-chip-text {
+                color: var(--keyword-color);
+                font-size: 0.72rem;
+                font-weight: 750;
+                line-height: 1.2;
+                overflow: hidden;
+                padding-left: 0.22rem;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            [class*="st-key-keyword_slot_"] [class*="st-key-clear_keyword_"] button {
+                width: 1.55rem;
+                min-width: 1.55rem;
+                height: 1.55rem;
+                min-height: 1.55rem;
+                border: 0;
+                background: transparent;
+                box-shadow: none;
+                color: var(--keyword-color);
+                font-size: 1rem;
+                padding: 0;
+            }
+
+            [class*="st-key-keyword_slot_"] [data-testid="stHorizontalBlock"] {
+                align-items: center;
+                gap: 0.12rem !important;
+            }
+
+            .ai-call-table-wrap {
+                width: 100%;
+                overflow-x: auto;
+                margin: 0.25rem 0 0.85rem;
+            }
+
+            .ai-call-table {
+                width: 100%;
+                border-collapse: collapse;
+                color: #d9d4cb;
+                font-size: 0.72rem;
+            }
+
+            .ai-call-table th {
+                color: #8f98a5;
+                font-size: 0.62rem;
+                font-weight: 750;
+                text-align: left;
+                text-transform: uppercase;
+            }
+
+            .ai-call-table th,
+            .ai-call-table td {
+                border-bottom: 1px solid #292d31;
+                padding: 0.38rem 0.42rem;
+                white-space: nowrap;
+            }
+
+            .ai-call-table th:last-child,
+            .ai-call-table td:last-child {
+                color: var(--skim-accent);
+                text-align: right;
             }
 
             .story-ai-cost {
@@ -1327,6 +1545,20 @@ def page_style() -> None:
             }
 
             @media (max-width: 640px) {
+                .headline-updated {
+                    font-size: 0.62rem;
+                }
+
+                .category-legend {
+                    gap: 0.22rem;
+                }
+
+                .category-legend-pill {
+                    min-height: 1.2rem;
+                    font-size: 0.55rem;
+                    padding: 0.2rem 0.38rem;
+                }
+
                 .ai-cost-strip {
                     align-items: end;
                     gap: 0.6rem;
@@ -1342,6 +1574,16 @@ def page_style() -> None:
 
                 .story-title {
                     font-size: var(--story-title-mobile-size, 1.3rem) !important;
+                }
+
+                .expanded-story-header {
+                    grid-template-columns: minmax(0, 2.5fr) minmax(4.5rem, 1fr);
+                    gap: 0.55rem;
+                }
+
+                .story-image {
+                    max-height: 6.2rem;
+                    border-radius: 8px;
                 }
 
                 .story-meta {
@@ -1893,7 +2135,7 @@ def headline_event_similarity(left_tokens: set[str], right_tokens: set[str]) -> 
 def custom_keywords() -> tuple[str, ...]:
     keywords = []
     for index in range(9):
-        value = str(st.session_state.get(f"custom_keyword_{index}", "")).strip()
+        value = str(st.session_state.get(f"saved_keyword_{index}", "")).strip()
         if value:
             keywords.append(value)
     return tuple(dict.fromkeys(keywords))
@@ -1916,23 +2158,47 @@ def query_param_nonnegative_int(name: str) -> int:
 def initialize_keyword_state() -> None:
     first_load = not st.session_state.get("keyword_state_initialized", False)
     for index in range(9):
-        key = f"custom_keyword_{index}"
+        saved_key = f"saved_keyword_{index}"
+        draft_key = f"keyword_draft_{index}"
         query_key = f"kw{index + 1}"
         if first_load:
-            st.session_state.setdefault(key, query_param_text(query_key))
+            legacy_value = str(st.session_state.get(f"custom_keyword_{index}", "")).strip()
+            st.session_state.setdefault(
+                saved_key,
+                query_param_text(query_key) or legacy_value,
+            )
         else:
-            st.session_state.setdefault(key, "")
+            st.session_state.setdefault(saved_key, "")
+        st.session_state.setdefault(draft_key, "")
     st.session_state.keyword_state_initialized = True
 
 
 def persist_keywords_to_query_params() -> None:
     for index in range(9):
         query_key = f"kw{index + 1}"
-        value = str(st.session_state.get(f"custom_keyword_{index}", "")).strip()
+        value = str(st.session_state.get(f"saved_keyword_{index}", "")).strip()
         if value:
             st.query_params[query_key] = value
         elif query_key in st.query_params:
             del st.query_params[query_key]
+
+
+def lock_keyword_slot(index: int) -> None:
+    value = clean_text(str(st.session_state.get(f"keyword_draft_{index}", "")))
+    if not value:
+        return
+    st.session_state[f"saved_keyword_{index}"] = value
+    st.session_state["last_settings"] = None
+    st.query_params[f"kw{index + 1}"] = value
+
+
+def clear_keyword_slot(index: int) -> None:
+    st.session_state[f"saved_keyword_{index}"] = ""
+    st.session_state[f"keyword_draft_{index}"] = ""
+    st.session_state["last_settings"] = None
+    query_key = f"kw{index + 1}"
+    if query_key in st.query_params:
+        del st.query_params[query_key]
 
 
 def initialize_ai_cost_state() -> None:
@@ -1951,6 +2217,7 @@ def initialize_ai_cost_state() -> None:
             for token in query_param_text(AI_COST_QUERY_EVENTS).split(",")
             if re.fullmatch(r"[a-f0-9]{16}", token)
         ],
+        "history": parse_ai_cost_history(query_param_text(AI_COST_QUERY_HISTORY)),
     }
     legacy_batch_id = query_param_text(AI_COST_QUERY_LAST_BATCH)
     if legacy_batch_id:
@@ -1959,7 +2226,13 @@ def initialize_ai_cost_state() -> None:
     query_is_newer = query_ledger["updated_at"] > file_ledger["updated_at"]
     query_is_migration = (
         query_ledger["updated_at"] == file_ledger["updated_at"]
-        and query_ledger["total_micros"] >= file_ledger["total_micros"]
+        and (
+            query_ledger["total_micros"] > file_ledger["total_micros"]
+            or (
+                query_ledger["total_micros"] == file_ledger["total_micros"]
+                and len(query_ledger["history"]) >= len(file_ledger["history"])
+            )
+        )
     )
     if query_has_ledger and (query_is_newer or query_is_migration):
         ledger = query_ledger
@@ -1974,6 +2247,7 @@ def initialize_ai_cost_state() -> None:
     st.session_state.ai_cost_recorded_events = list(dict.fromkeys(ledger["events"]))[
         -AI_COST_MAX_RECORDED_EVENTS:
     ]
+    st.session_state.ai_cost_history = list(ledger["history"])[-AI_COST_HISTORY_LIMIT:]
     st.session_state.ai_cost_state_initialized = True
     persist_ai_cost_state()
 
@@ -1986,7 +2260,54 @@ def empty_ai_cost_ledger() -> dict[str, object]:
         "latest_articles": 0,
         "updated_at": 0,
         "events": [],
+        "history": [],
     }
+
+
+def normalize_ai_cost_history(raw: object) -> list[dict[str, object]]:
+    if not isinstance(raw, list):
+        return []
+    normalized: list[dict[str, object]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        token = str(entry.get("token", ""))
+        if not re.fullmatch(r"[a-f0-9]{16}", token):
+            continue
+        try:
+            occurred_at = max(0, int(entry.get("at", 0)))
+            cost_micros = max(0, int(entry.get("cost_micros", 0)))
+            articles = max(1, int(entry.get("articles", 1)))
+        except (TypeError, ValueError):
+            continue
+        label = re.sub(r"\s+", " ", str(entry.get("label", "AI call"))).strip()[:80]
+        model = re.sub(r"\s+", " ", str(entry.get("model", "OpenAI"))).strip()[:80]
+        normalized.append(
+            {
+                "token": token,
+                "at": occurred_at,
+                "cost_micros": cost_micros,
+                "articles": articles,
+                "label": label or "AI call",
+                "model": model or "OpenAI",
+            }
+        )
+    deduplicated: dict[str, dict[str, object]] = {}
+    for entry in normalized:
+        token = str(entry["token"])
+        deduplicated.pop(token, None)
+        deduplicated[token] = entry
+    return list(deduplicated.values())[-AI_COST_HISTORY_LIMIT:]
+
+
+def parse_ai_cost_history(value: str) -> list[dict[str, object]]:
+    if not value:
+        return []
+    try:
+        raw = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return normalize_ai_cost_history(raw)
 
 
 def normalize_ai_cost_ledger(raw: object) -> dict[str, object]:
@@ -2011,6 +2332,7 @@ def normalize_ai_cost_ledger(raw: object) -> dict[str, object]:
             for token in events
             if re.fullmatch(r"[a-f0-9]{16}", str(token))
         ][-AI_COST_MAX_RECORDED_EVENTS:]
+    ledger["history"] = normalize_ai_cost_history(raw.get("history", []))
     return ledger
 
 
@@ -2033,6 +2355,9 @@ def current_ai_cost_ledger() -> dict[str, object]:
         "events": list(st.session_state.get("ai_cost_recorded_events", []))[
             -AI_COST_MAX_RECORDED_EVENTS:
         ],
+        "history": normalize_ai_cost_history(
+            st.session_state.get("ai_cost_history", [])
+        ),
     }
 
 
@@ -2062,6 +2387,7 @@ def persist_ai_cost_state() -> None:
         AI_COST_QUERY_LATEST_ARTICLES: ledger["latest_articles"],
         AI_COST_QUERY_EVENTS: ",".join(ledger["events"]),
         AI_COST_QUERY_UPDATED: ledger["updated_at"],
+        AI_COST_QUERY_HISTORY: json.dumps(ledger["history"], separators=(",", ":")),
     }
     for key, value in values.items():
         st.query_params[key] = str(value)
@@ -2079,6 +2405,7 @@ def sync_ai_cost_browser_storage(query_had_ledger: bool) -> None:
             "latest_articles": AI_COST_QUERY_LATEST_ARTICLES,
             "events": AI_COST_QUERY_EVENTS,
             "updated_at": AI_COST_QUERY_UPDATED,
+            "history": AI_COST_QUERY_HISTORY,
         }
     )
     components.html(
@@ -2101,6 +2428,8 @@ def sync_ai_cost_browser_storage(query_had_ledger: bool) -> None:
               for (const [field, queryName] of Object.entries(names)) {{
                 const value = field === "events"
                   ? (Array.isArray(stored[field]) ? stored[field].join(",") : "")
+                  : field === "history"
+                  ? JSON.stringify(Array.isArray(stored[field]) ? stored[field] : [])
                   : String(Math.max(0, Number(stored[field]) || 0));
                 url.searchParams.set(queryName, value);
               }}
@@ -2129,6 +2458,7 @@ def set_ai_cost_total(total_dollars: float, reset_history: bool = False) -> None
         st.session_state.ai_cost_total_articles = 0
         st.session_state.ai_cost_latest_articles = 0
         st.session_state.ai_cost_recorded_events = []
+        st.session_state.ai_cost_history = []
     st.session_state.ai_cost_updated_at = round(datetime.now(timezone.utc).timestamp() * 1000)
     persist_ai_cost_state()
 
@@ -4069,7 +4399,8 @@ def expanded_headline_font_sizes(display_headline: str, has_image: bool) -> tupl
     headline_length = max(1, len(clean_text(display_headline)))
     desktop_capacity = 62 if has_image else 92
     desktop_size = max(1.0, min(1.575, 1.575 * desktop_capacity / headline_length))
-    mobile_size = max(0.9, min(1.3, 1.3 * 58 / headline_length))
+    mobile_capacity = 36 if has_image else 58
+    mobile_size = max(0.72, min(1.2, 1.2 * mobile_capacity / headline_length))
     return desktop_size, mobile_size
 
 
@@ -4141,13 +4472,14 @@ def render_story_header(
         f"--story-title-mobile-size:{mobile_size:.3f}rem"
     )
     if story.image_url:
-        story_title = f'<h2 class="story-title" style="{title_style}">{story_title_text}</h2>'
-        title_col, image_col = st.columns([3, 1], vertical_alignment="top")
-        with title_col:
-            st.markdown(story_title, unsafe_allow_html=True)
-        with image_col:
-            image_url = html.escape(story.image_url, quote=True)
-            st.markdown(f'<img class="story-image" src="{image_url}" alt="">', unsafe_allow_html=True)
+        image_url = html.escape(story.image_url, quote=True)
+        st.markdown(
+            '<div class="expanded-story-header">'
+            f'<h2 class="story-title" style="{title_style}">{story_title_text}</h2>'
+            f'<img class="story-image" src="{image_url}" alt="">'
+            "</div>",
+            unsafe_allow_html=True,
+        )
     else:
         story_title = (
             f'<h2 class="story-title story-title-full" style="{title_style}">'
@@ -4262,7 +4594,8 @@ def render_deep_analysis(prepared_story: PreparedStory) -> None:
         learn_more = analysis.get("Learn More")
         if learn_more:
             st.markdown(
-                f'<div class="deep-summary-field">{render_summary_value(learn_more)}</div>',
+                '<div class="deep-summary-field deep-learn-more">'
+                f"{render_summary_value(learn_more)}</div>",
                 unsafe_allow_html=True,
             )
 
@@ -4598,6 +4931,34 @@ def render_ai_cost_summary(target: object) -> None:
     )
 
 
+def render_ai_cost_history(target: object) -> None:
+    history = normalize_ai_cost_history(st.session_state.get("ai_cost_history", []))
+    if not history:
+        target.caption("The last 10 AI calls will appear here as Skim creates them.")
+        return
+
+    rows = []
+    for entry in reversed(history):
+        occurred_at = datetime.fromtimestamp(
+            int(entry["at"]) / 1000,
+            tz=timezone.utc,
+        ).astimezone(EASTERN_STANDARD_TIME)
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(occurred_at.strftime('%b %d · %I:%M %p EST').replace(' 0', ' '))}</td>"
+            f"<td>{html.escape(str(entry['label']))}</td>"
+            f"<td>{html.escape(str(entry['model']))}</td>"
+            f"<td>{format_cost(int(entry['cost_micros']) / AI_COST_SCALE)}</td>"
+            "</tr>"
+        )
+    target.markdown(
+        '<div class="ai-call-table-wrap"><table class="ai-call-table">'
+        "<thead><tr><th>Time</th><th>AI call</th><th>Model</th><th>Cost</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+
+
 def settings_signature(
     selected_topics: list[str],
     include_aggregators: bool,
@@ -4653,6 +5014,31 @@ def mark_batch_shown(batch: Sequence[RankedStory], refresh_key: str) -> None:
 
 def ai_cost_event_token(event_id: str) -> str:
     return hashlib.sha256(event_id.encode("utf-8")).hexdigest()[:16]
+
+
+def ai_cost_event_details(event_id: str, article_count: int) -> tuple[str, str]:
+    normalized = event_id.lower()
+    if normalized.startswith("question-"):
+        return "Story question", OPENAI_DEEP_MODEL
+    if normalized.startswith("research-"):
+        return "Research explainer", OPENAI_DEEP_MODEL
+    if normalized.startswith("deep-"):
+        return "Deep analysis", OPENAI_DEEP_MODEL
+    if normalized.startswith("headline-"):
+        return "Story brief", OPENAI_SUMMARY_MODEL
+    if article_count > 1:
+        return f"{article_count} story briefs", OPENAI_SUMMARY_MODEL
+    return "Story brief", OPENAI_SUMMARY_MODEL
+
+
+def merge_ai_cost_history(*histories: object) -> list[dict[str, object]]:
+    merged: dict[str, dict[str, object]] = {}
+    for history in histories:
+        for entry in normalize_ai_cost_history(history):
+            token = str(entry["token"])
+            merged.pop(token, None)
+            merged[token] = entry
+    return list(merged.values())[-AI_COST_HISTORY_LIMIT:]
 
 
 def accumulate_ai_cost(
@@ -4711,10 +5097,25 @@ def record_batch_ai_cost(
     )
     st.session_state.ai_cost_latest_articles = article_count
     st.session_state.ai_cost_updated_at = round(datetime.now(timezone.utc).timestamp() * 1000)
-    recorded_events.append(ai_cost_event_token(refresh_key))
+    event_token = ai_cost_event_token(refresh_key)
+    recorded_events.append(event_token)
     st.session_state.ai_cost_recorded_events = list(dict.fromkeys(recorded_events))[
         -AI_COST_MAX_RECORDED_EVENTS:
     ]
+    event_label, event_model = ai_cost_event_details(refresh_key, article_count)
+    history_entry = {
+        "token": event_token,
+        "at": st.session_state.ai_cost_updated_at,
+        "cost_micros": latest_micros,
+        "articles": article_count,
+        "label": event_label,
+        "model": event_model,
+    }
+    st.session_state.ai_cost_history = merge_ai_cost_history(
+        stored_ledger.get("history", []),
+        st.session_state.get("ai_cost_history", []),
+        [history_entry],
+    )
     persist_ai_cost_state()
 
 
@@ -4727,12 +5128,22 @@ def batch_refreshed_label() -> str:
     return formatted.replace(" 0", " ").replace(" at 0", " at ")
 
 
-def render_batch_timestamp(batch_size: int) -> None:
+def render_headline_legend() -> None:
     label = batch_refreshed_label()
-    if not label:
-        return
-    headline_word = "headline" if batch_size == 1 else "headlines"
-    st.caption(f"{batch_size} {headline_word} refreshed: {label} · No repeats for {NO_REPEAT_HOURS} hours")
+    updated_text = f"Headlines updated as of {label}" if label else "Headlines updating now"
+    pills = "".join(
+        '<span class="category-legend-pill" '
+        f'style="--legend-color:{html.escape(color, quote=True)}">'
+        f"{html.escape(category)}</span>"
+        for category, color in CATEGORY_COLORS.items()
+    )
+    st.markdown(
+        '<div class="headline-legend">'
+        f'<div class="headline-updated">{html.escape(updated_text)}</div>'
+        f'<div class="category-legend">{pills}</div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def ranked_item_is_available(item: RankedStory, blocked_cluster_keys: set[str]) -> bool:
@@ -4870,29 +5281,97 @@ def build_publishable_batch(
     return batch
 
 
+def append_keyword_headlines(
+    batch: list[RankedStory],
+    keyword_rankings: dict[str, list[RankedStory]],
+    blocked_cluster_keys: set[str],
+) -> list[RankedStory]:
+    combined = list(batch)
+    used_cluster_keys = {item.cluster_key for item in combined}
+    for keyword_items in keyword_rankings.values():
+        for item in keyword_items:
+            if item.cluster_key in blocked_cluster_keys | used_cluster_keys:
+                continue
+            combined.append(item)
+            used_cluster_keys.add(item.cluster_key)
+            break
+    return combined
+
+
 def build_headline_batch(
     ranked_stories: list[RankedStory],
+    keyword_rankings: dict[str, list[RankedStory]] | None = None,
 ) -> list[RankedStory]:
+    keyword_rankings = keyword_rankings or {}
     prune_shown_cluster_history()
-    current = current_batch_from_keys(ranked_stories, {})
+    current = current_batch_from_keys(ranked_stories, keyword_rankings)
     if current:
         return sort_headlines_by_age(current)
 
     shown_cluster_keys = set(st.session_state.shown_cluster_history)
     batch: list[RankedStory] = []
     used_cluster_keys: set[str] = set()
-    for item in ranked_stories:
+    base_rankings = [item for item in ranked_stories if item.story.group != "Custom"]
+    for item in base_rankings:
         if len(batch) >= BATCH_SIZE:
             break
         if ranked_item_is_available(item, shown_cluster_keys | used_cluster_keys):
             batch.append(item)
             used_cluster_keys.add(item.cluster_key)
 
+    batch = append_keyword_headlines(batch, keyword_rankings, shown_cluster_keys)
     batch = sort_headlines_by_age(batch)
     refresh_key = utc_now().isoformat()
     st.session_state.current_cluster_keys = [item.cluster_key for item in batch]
     mark_batch_shown(batch, refresh_key)
     return batch
+
+
+def render_keyword_boosters() -> None:
+    st.markdown("**Keyword boosters**")
+    st.caption(
+        "Each saved keyword adds its strongest current story and stays locked until you remove it."
+    )
+    for row_index in range(3):
+        cols = st.columns(3, gap="small")
+        for col_index, col in enumerate(cols):
+            keyword_index = (row_index * 3) + col_index
+            saved_keyword = clean_text(
+                str(st.session_state.get(f"saved_keyword_{keyword_index}", ""))
+            )
+            with col:
+                with st.container(key=f"keyword_slot_{keyword_index}"):
+                    if saved_keyword:
+                        keyword_col, clear_col = st.columns(
+                            [5, 1],
+                            gap="small",
+                            vertical_alignment="center",
+                        )
+                        with keyword_col:
+                            st.markdown(
+                                '<div class="keyword-chip-text '
+                                f'keyword-color-{keyword_index}">'
+                                f"{html.escape(saved_keyword)}</div>",
+                                unsafe_allow_html=True,
+                            )
+                        with clear_col:
+                            st.button(
+                                "×",
+                                key=f"clear_keyword_{keyword_index}",
+                                help=f"Remove {saved_keyword}",
+                                on_click=clear_keyword_slot,
+                                args=(keyword_index,),
+                            )
+                    else:
+                        st.text_input(
+                            f"Keyword {keyword_index + 1}",
+                            key=f"keyword_draft_{keyword_index}",
+                            placeholder="Add keyword",
+                            label_visibility="collapsed",
+                            on_change=lock_keyword_slot,
+                            args=(keyword_index,),
+                        )
+    persist_keywords_to_query_params()
 
 
 def render_admin(errors: Sequence[str], batch_size: int) -> None:
@@ -4953,20 +5432,7 @@ def render_admin(errors: Sequence[str], batch_size: int) -> None:
                 st.session_state.current_cluster_keys = []
                 st.rerun()
 
-        st.markdown("**Keyword boosters**")
-        st.caption("Saved keywords influence which headlines rise into the 20-item list.")
-        for row_index in range(3):
-            cols = st.columns(3)
-            for col_index, col in enumerate(cols):
-                keyword_index = (row_index * 3) + col_index
-                with col:
-                    st.text_input(
-                        f"Keyword {keyword_index + 1}",
-                        key=f"custom_keyword_{keyword_index}",
-                        placeholder=f"Keyword {keyword_index + 1}",
-                        label_visibility="collapsed",
-                    )
-        persist_keywords_to_query_params()
+        render_keyword_boosters()
         st.caption(
             "The main briefing favors independent outlet confirmation, fast coverage growth, "
             "and fresh consequential reporting from major newsrooms."
@@ -4992,6 +5458,8 @@ def render_admin(errors: Sequence[str], batch_size: int) -> None:
             unsafe_allow_html=True,
         )
         render_ai_cost_summary(st)
+        st.markdown("**Last 10 AI calls**")
+        render_ai_cost_history(st)
 
         st.markdown("**All-time AI cost ledger**")
         st.caption(
@@ -5105,8 +5573,10 @@ def main() -> None:
             include_gdelt,
         )
         ranked_stories = rank_stories(stories, keywords)
+        keyword_rankings, keyword_errors = fetch_keyword_rankings(keywords)
+        errors.extend(keyword_errors)
 
-    batch = build_headline_batch(ranked_stories)
+    batch = build_headline_batch(ranked_stories, keyword_rankings)
     pinned_story_id = st.session_state.pinned_story_id
     pinned_items = [item for item in batch if item.story.id == pinned_story_id]
     if pinned_story_id and not pinned_items:
@@ -5121,7 +5591,7 @@ def main() -> None:
         for ranked_story in batch_to_render:
             render_headline_story(ranked_story, detail, plain_language)
         if batch and st.button(
-            "Load 20 more",
+            "Load 20 More Headlines",
             key="load-more-headlines",
             icon=":material/add:",
             help="Show the next unseen 20 headlines from the current discovery pool.",
@@ -5131,7 +5601,7 @@ def main() -> None:
             st.rerun()
 
     with batch_timestamp_slot.container():
-        render_batch_timestamp(len(batch))
+        render_headline_legend()
 
     errors.extend(st.session_state.generation_issues)
     if not batch:
