@@ -1376,19 +1376,22 @@ def page_style() -> None:
                 min-height: 2.8rem;
                 min-width: 2.8rem;
                 padding: 0 !important;
+                position: relative;
                 width: 2.8rem;
             }
 
             .st-key-headline_feed [class*="st-key-story_questions_"]
             [data-testid="stFormSubmitButton"] button::before {
-                border-bottom: 0.52rem solid transparent;
-                border-left: 0.82rem solid #000000;
-                border-top: 0.52rem solid transparent;
+                background: #000000;
+                clip-path: polygon(0 0, 100% 50%, 0 100%);
                 content: "";
                 display: block;
-                height: 0;
-                transform: translateX(0.06rem);
-                width: 0;
+                height: 1.35rem;
+                left: 50%;
+                position: absolute;
+                top: 50%;
+                transform: translate(-50%, -50%);
+                width: 1.07rem;
             }
 
             .st-key-headline_feed [class*="st-key-story_questions_"]
