@@ -786,6 +786,48 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertIn(app.sentence_count(result["answer"]), (3, 4))
         self.assertGreater(app.card_ai_cost(result), 0)
 
+    def test_story_question_uses_broader_knowledge_and_cluster_context(self) -> None:
+        instructions = app.story_question_instructions()
+        self.assertIn("question defines the scope", instructions)
+        self.assertIn("not as a boundary", instructions)
+        self.assertIn("broad, reliable knowledge", instructions)
+        self.assertIn("Do not decline or narrow", instructions)
+
+        reuters = replace(
+            self.story,
+            id="reuters-related",
+            source="Reuters",
+            link="https://example.com/reuters-related",
+            title="State epidemiologists examine reported childhood cancer cluster",
+            summary_text=(
+                "State investigators will compare observed cases with expected rates. "
+                "Officials said the review has not identified a common cause."
+            ),
+        )
+        ap = replace(
+            self.story,
+            id="ap-related",
+            source="Associated Press",
+            link="https://example.com/ap-related",
+            title="Families seek answers as health review begins",
+            summary_text="Experts cautioned that geographic clusters can occur by chance.",
+        )
+        ranked = app.RankedStory(
+            story=self.story,
+            cluster_key="question-context",
+            references=3,
+            topic_story_count=3,
+            score=10,
+            article_candidates=(self.story, reuters, ap),
+        )
+
+        related = app.story_question_related_coverage(ranked)
+
+        self.assertIn("Reuters:", related)
+        self.assertIn("Associated Press:", related)
+        self.assertIn("expected rates", related)
+        self.assertNotIn("The Guardian:", related)
+
     def test_research_topic_falls_back_to_visible_research_trail(self) -> None:
         analysis = {
             "Research trail": (

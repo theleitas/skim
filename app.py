@@ -4105,6 +4105,7 @@ def ai_story_question_cached(
     title: str,
     source: str,
     article_text: str,
+    related_coverage: str,
     summary_text: str,
     deep_context: str,
     question: str,
@@ -4126,22 +4127,13 @@ def ai_story_question_cached(
         <ARTICLE_BODY>
         {article_text}
         </ARTICLE_BODY>
+
+        <RELATED_COVERAGE>
+        {related_coverage or "No additional clustered reporting was available."}
+        </RELATED_COVERAGE>
         """
     ).strip()
-    instructions = textwrap.dedent(
-        f"""
-        Answer the reader's question directly in 3-4 cohesive sentences. Use the supplied source
-        material for current-event facts and reliable established knowledge for explanation.
-        Teach the key idea in plain language, preserve uncertainty, and distinguish a fact from a
-        reasonable inference. If the source material cannot establish the answer, say what is
-        known and what remains uncertain without inventing details.
-
-        {summary_readability_guidance(True)}
-
-        Keep the answer between 45 and 120 words. Do not mention an article, story, prompt, model,
-        AI, or reading process. Do not add links, headings, bullets, or advice about what to click.
-        """
-    ).strip()
+    instructions = story_question_instructions()
     return ai_json(
         provider,
         model,
@@ -4152,6 +4144,31 @@ def ai_story_question_cached(
         schema_name="skim_story_question",
         schema=STORY_QUESTION_RESPONSE_SCHEMA,
     )
+
+
+def story_question_instructions() -> str:
+    return textwrap.dedent(
+        f"""
+        The reader's question defines the scope of this answer. Treat the supplied news material
+        as context for the event, not as a boundary on what you may explain. Answer in 3-4 cohesive
+        sentences using broad, reliable knowledge in addition to the supplied reporting. Bring in
+        relevant history, institutions, law, science, economics, geography, comparisons, or known
+        mechanisms when they help answer the specific question. Do not decline or narrow an answer
+        merely because the article did not discuss that part of the subject.
+
+        Use the supplied reporting to anchor claims about this particular developing event. Clearly
+        distinguish confirmed event facts, established general knowledge, and reasonable inference.
+        If the question requires recent event-specific facts that the supplied coverage does not
+        establish, explain the uncertainty instead of inventing an update. When the reader asks what
+        something could mean, identify the strongest plausible connection or consequence and explain
+        why, without presenting a forecast as settled fact.
+
+        {summary_readability_guidance(True)}
+
+        Keep the answer between 45 and 120 words. Do not mention an article, story, prompt, model,
+        AI, or reading process. Do not add links, headings, bullets, or advice about what to click.
+        """
+    ).strip()
 
 
 def strip_markdown_links(text: str) -> str:
@@ -4539,6 +4556,7 @@ def answer_story_question(
         for label in ("Deeper analysis", "Watch next", "Research trail")
         if analysis.get(label)
     )
+    related_coverage = story_question_related_coverage(prepared_story.ranked_story)
     model = ai_model(provider, deep=True)
     ai_result = ai_story_question_cached(
         provider,
@@ -4547,6 +4565,7 @@ def answer_story_question(
         story.title,
         story.source,
         prepared_story.evidence.text,
+        related_coverage,
         summary_text,
         deep_context,
         clean_text(question),
@@ -4566,14 +4585,42 @@ def answer_story_question(
             estimated_input = estimated_token_count(
                 story.title,
                 prepared_story.evidence.text,
+                related_coverage,
                 summary_text,
                 deep_context,
                 question,
-                overhead_tokens=420,
+                overhead_tokens=560,
             )
             ai_cost = openai_cost(model, estimated_input, 500)
         result["__ai_cost"] = f"{ai_cost or 0.0:.8f}"
     return result
+
+
+def story_question_related_coverage(ranked_story: RankedStory) -> str:
+    primary = ranked_story.story
+    primary_link = normalized_story_url(primary.link)
+    seen_sources = {clean_text(primary.source).lower()}
+    reports: list[str] = []
+
+    for candidate in ranked_story.article_candidates:
+        source = clean_text(candidate.source)
+        source_key = source.lower()
+        if not source or source_key in seen_sources:
+            continue
+        if normalized_story_url(candidate.link) == primary_link:
+            continue
+
+        title = clean_headline_source(candidate.title)
+        excerpt = " ".join(split_sentences(clean_text(candidate.summary_text))[:2])
+        report = f"{source}: {title}"
+        if excerpt and excerpt.lower() != title.lower():
+            report += f" - {excerpt}"
+        reports.append(report)
+        seen_sources.add(source_key)
+        if len(reports) == 5:
+            break
+
+    return "\n".join(reports)
 
 
 def story_age(story: Story) -> str:
@@ -4891,7 +4938,7 @@ def render_story_questions(prepared_story: PreparedStory) -> None:
             model = ai_model(provider, deep=True) if provider else "not configured"
             loading_slot = st.empty()
             loading_slot.markdown(
-                ai_working_markup(f"Using AI ({model}) to answer your question..."),
+                ai_working_markup(f"Using AI ({model}) to build a broader answer..."),
                 unsafe_allow_html=True,
             )
             try:
