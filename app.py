@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import html
 import json
@@ -13,7 +14,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
@@ -41,6 +42,7 @@ MAX_BRIEFING_SEARCH_RESULTS = 8
 MAX_BRIEFING_SEARCH_CANDIDATES = 12
 MAX_BASE_CANDIDATES = 40
 MAX_KEYWORD_CANDIDATES = 10
+MAX_HEADLINES_PER_OUTLET = 2
 MIN_SUMMARY_WORDS = 18
 MIN_NEW_SUMMARY_TERMS = 7
 NO_REPEAT_HOURS = 24
@@ -238,6 +240,90 @@ NEWS_SOURCES = (
         "Major News",
         ("World", "Politics", "Business", "Climate", "Health", "Culture"),
     ),
+    NewsSource(
+        "NBC News",
+        "https://feeds.nbcnews.com/nbcnews/public/news",
+        "Major News",
+        ("World", "US", "Politics", "Business", "Tech", "Health", "Culture"),
+        item_limit=30,
+    ),
+    NewsSource(
+        "UN News",
+        "https://news.un.org/feed/subscribe/en/news/all/rss.xml",
+        "Major News",
+        ("World", "Politics", "Climate", "Health"),
+        item_limit=30,
+    ),
+    NewsSource(
+        "RFI English",
+        "https://www.rfi.fr/en/rss",
+        "Major News",
+        ("World", "Politics", "Business", "Culture", "Sports"),
+        item_limit=30,
+    ),
+    NewsSource(
+        "Africanews",
+        "https://www.africanews.com/feed/rss",
+        "Major News",
+        ("World", "Politics", "Business", "Climate", "Health", "Culture"),
+        item_limit=30,
+    ),
+    NewsSource(
+        "The Japan Times",
+        "https://www.japantimes.co.jp/feed/topstories/",
+        "Major News",
+        ("World", "Politics", "Business", "Tech", "Culture", "Sports"),
+        item_limit=30,
+    ),
+    NewsSource(
+        "The Hindu World",
+        "https://www.thehindu.com/news/international/feeder/default.rss",
+        "Major News",
+        ("World", "Politics", "Business", "Climate", "Health"),
+        item_limit=30,
+    ),
+    NewsSource(
+        "Times of India",
+        "https://timesofindia.indiatimes.com/rssfeedstopstories.cms",
+        "Major News",
+        ("World", "Politics", "Business", "Tech", "Culture", "Sports"),
+        item_limit=30,
+    ),
+    NewsSource(
+        "Arab News",
+        "https://www.arabnews.com/rss.xml",
+        "Major News",
+        ("World", "Politics", "Business", "Climate", "Health", "Culture"),
+        item_limit=30,
+    ),
+    NewsSource(
+        "Buenos Aires Times",
+        "https://www.batimes.com.ar/feed",
+        "Major News",
+        ("World", "Politics", "Business", "Culture", "Sports"),
+        item_limit=30,
+    ),
+    NewsSource(
+        "Yonhap News",
+        "https://en.yna.co.kr/RSS/news.xml",
+        "Major News",
+        ("World", "Politics", "Business", "Tech", "Culture", "Sports"),
+        item_limit=30,
+    ),
+    NewsSource(
+        "Channel News Asia",
+        "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml",
+        "Major News",
+        ("World", "Politics", "Business", "Tech", "Health", "Culture"),
+        item_limit=30,
+    ),
+    NewsSource(
+        "The Times of Israel",
+        "https://www.timesofisrael.com/feed/",
+        "Major News",
+        ("World", "Politics", "Business", "Tech", "Culture"),
+        item_limit=30,
+    ),
     NewsSource("NYT Top Stories", "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml", "Major News", ("World", "US")),
     NewsSource("NYT World", "https://rss.nytimes.com/services/xml/rss/nyt/World.xml", "Major News", ("World",)),
     NewsSource("NYT Technology", "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml", "Major News", ("Tech", "AI")),
@@ -273,6 +359,13 @@ NEWS_SOURCES = (
         "https://www.espn.com/espn/rss/news",
         "Specialist",
         ("Sports",),
+    ),
+    NewsSource(
+        "BBC Sport",
+        "https://feeds.bbci.co.uk/sport/rss.xml",
+        "Specialist",
+        ("Sports",),
+        item_limit=30,
     ),
     NewsSource(
         "MarketWatch",
@@ -335,13 +428,18 @@ MAJOR_OUTLET_MARKERS = (
     "financial times",
     "france 24",
     "guardian",
+    "japan times",
     "nbc news",
     "new york times",
     "npr",
     "pbs news",
+    "rfi",
     "reuters",
     "rnz",
     "sky news",
+    "times of india",
+    "un news",
+    "yonhap",
     "wall street journal",
     "washington post",
 )
@@ -349,13 +447,17 @@ MAJOR_OUTLET_MARKERS = (
 DOMAIN_SOURCE_NAMES = {
     "abcnews.go.com": "ABC News",
     "abc.net.au": "ABC Australia",
+    "africanews.com": "Africanews",
     "aljazeera.com": "Al Jazeera",
     "apnews.com": "Associated Press",
+    "arabnews.com": "Arab News",
+    "batimes.com.ar": "Buenos Aires Times",
     "bbc.co.uk": "BBC",
     "bbc.com": "BBC",
     "bloomberg.com": "Bloomberg",
     "cbsnews.com": "CBS News",
     "cbc.ca": "CBC News",
+    "channelnewsasia.com": "Channel News Asia",
     "cnn.com": "CNN",
     "dw.com": "Deutsche Welle",
     "ft.com": "Financial Times",
@@ -366,19 +468,26 @@ DOMAIN_SOURCE_NAMES = {
     "nasa.gov": "NASA",
     "nbcnews.com": "NBC News",
     "npr.org": "NPR",
+    "news.un.org": "UN News",
     "nytimes.com": "New York Times",
     "pbs.org": "PBS News",
     "politico.com": "Politico",
     "propublica.org": "ProPublica",
     "reuters.com": "Reuters",
+    "rfi.fr": "RFI English",
     "rnz.co.nz": "RNZ",
     "sky.com": "Sky News",
     "techcrunch.com": "TechCrunch",
     "theguardian.com": "The Guardian",
+    "thehindu.com": "The Hindu",
+    "timesofindia.indiatimes.com": "Times of India",
+    "timesofisrael.com": "The Times of Israel",
     "theverge.com": "The Verge",
     "variety.com": "Variety",
     "washingtonpost.com": "Washington Post",
     "wsj.com": "Wall Street Journal",
+    "japantimes.co.jp": "The Japan Times",
+    "yna.co.kr": "Yonhap News",
 }
 
 BREAKING_NEWS_TERMS = {
@@ -2108,7 +2217,11 @@ def parse_source_feed(source: NewsSource, xml_bytes: bytes) -> tuple[list[Story]
         date_text = child_text(entry, ("pubDate", "published", "updated", "date"))
         if not title or not link:
             continue
-        story_source = publisher or source.name
+        story_source = source.name
+        if google_news_item or source.group == "Custom":
+            story_source = google_news_publisher_name(publisher) if publisher else source.name
+        elif drudge_item:
+            story_source = publisher or source.name
         stories.append(
             Story(
                 id=stable_id(story_source, title, link),
@@ -2125,14 +2238,22 @@ def parse_source_feed(source: NewsSource, xml_bytes: bytes) -> tuple[list[Story]
     return stories, None
 
 
+def decompress_feed_payload(payload: bytes) -> bytes:
+    if payload.startswith(b"\x1f\x8b"):
+        return gzip.decompress(payload)
+    return payload
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
     request = urllib.request.Request(source.url, headers=REQUEST_HEADERS)
     try:
         with urllib.request.urlopen(request, timeout=FEED_TIMEOUT_SECONDS) as response:
-            xml_bytes = response.read()
+            xml_bytes = decompress_feed_payload(response.read())
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
         return [], f"{source.name}: {exc}"
+    except OSError as exc:
+        return [], f"{source.name}: could not decompress feed ({exc})"
     return parse_source_feed(source, xml_bytes)
 
 
@@ -2801,6 +2922,7 @@ def complete_story_refresh() -> None:
     resolve_article_url.clear()
     fetch_article_evidence.clear()
     st.session_state.current_cluster_keys = []
+    st.session_state.current_representative_ids = {}
     st.session_state.last_settings = None
     st.session_state.deep_analyses = {}
     st.session_state.research_briefs = {}
@@ -2815,6 +2937,7 @@ def complete_story_refresh() -> None:
 
 def load_next_story_batch() -> None:
     st.session_state.current_cluster_keys = []
+    st.session_state.current_representative_ids = {}
     st.session_state.deep_analyses = {}
     st.session_state.research_briefs = {}
     st.session_state.story_questions = {}
@@ -5471,6 +5594,9 @@ def current_batch_from_keys(
     current_cluster_keys = st.session_state.current_cluster_keys
     if not current_cluster_keys:
         return []
+    representative_ids = dict(
+        getattr(st.session_state, "current_representative_ids", {})
+    )
 
     available_by_key: dict[str, RankedStory] = {}
     for item in ranked_stories:
@@ -5483,7 +5609,16 @@ def current_batch_from_keys(
     for cluster_key in current_cluster_keys:
         item = available_by_key.get(cluster_key)
         if item and ranked_item_is_available(item, set()):
-            current.append(item)
+            representative_id = str(representative_ids.get(cluster_key, ""))
+            representative = next(
+                (
+                    candidate
+                    for candidate in (item.story, *item.article_candidates)
+                    if candidate.id == representative_id
+                ),
+                item.story,
+            )
+            current.append(item if representative == item.story else replace(item, story=representative))
     return current
 
 
@@ -5590,6 +5725,7 @@ def build_publishable_batch(
                     on_story(prepared, index)
             return restored
         st.session_state.current_cluster_keys = []
+        st.session_state.current_representative_ids = {}
 
     refresh_key = utc_now().isoformat()
     batch: list[PreparedStory] = []
@@ -5618,6 +5754,9 @@ def build_publishable_batch(
 
     ranked_batch = [prepared.ranked_story for prepared in batch]
     st.session_state.current_cluster_keys = [item.cluster_key for item in ranked_batch]
+    st.session_state.current_representative_ids = {
+        item.cluster_key: item.story.id for item in ranked_batch
+    }
     mark_batch_shown(ranked_batch, refresh_key)
     record_batch_ai_cost(batch, refresh_key, attempted_ai_cost)
     return batch
@@ -5649,6 +5788,26 @@ def headline_popularity_key(item: RankedStory) -> tuple[float, int, int, float]:
     )
 
 
+def diversified_story_representative(
+    item: RankedStory,
+    outlet_counts: Counter[str],
+    max_per_outlet: int = MAX_HEADLINES_PER_OUTLET,
+) -> RankedStory | None:
+    candidates = (item.story, *item.article_candidates)
+    seen_outlets: set[str] = set()
+    for candidate in candidates:
+        outlet = outlet_identity(candidate.source)
+        if not outlet or outlet in seen_outlets:
+            continue
+        seen_outlets.add(outlet)
+        if outlet_counts[outlet] >= max_per_outlet:
+            continue
+        if candidate == item.story:
+            return item
+        return replace(item, story=candidate)
+    return None
+
+
 def select_balanced_headlines(
     ranked_stories: Sequence[RankedStory],
     blocked_cluster_keys: set[str],
@@ -5663,29 +5822,80 @@ def select_balanced_headlines(
     ]
     selected: list[RankedStory] = []
     selected_cluster_keys: set[str] = set()
+    selected_categories: set[str] = set()
+    outlet_counts: Counter[str] = Counter()
+
+    def add_item(item: RankedStory, max_per_outlet: int | None) -> bool:
+        if item.cluster_key in selected_cluster_keys:
+            return False
+        chosen = (
+            diversified_story_representative(item, outlet_counts, max_per_outlet)
+            if max_per_outlet is not None
+            else item
+        )
+        if chosen is None:
+            return False
+        selected.append(chosen)
+        selected_cluster_keys.add(chosen.cluster_key)
+        outlet_counts[outlet_identity(chosen.story.source)] += 1
+        return True
 
     for category in CATEGORY_COLORS:
-        category_candidates = [
-            item
-            for item in eligible
-            if item.cluster_key not in selected_cluster_keys
-            and story_category(item.story) == category
-        ]
-        if not category_candidates:
+        category_candidates = sorted(
+            (
+                item
+                for item in eligible
+                if item.cluster_key not in selected_cluster_keys
+                and story_category(item.story) == category
+            ),
+            key=headline_popularity_key,
+            reverse=True,
+        )
+        for item in category_candidates:
+            if add_item(item, MAX_HEADLINES_PER_OUTLET):
+                selected_categories.add(category)
+                break
+        if len(selected) >= limit:
+            return selected
+
+    # A third item from one publisher is allowed only to preserve an otherwise
+    # missing category. The normal target remains two per outlet.
+    for category in CATEGORY_COLORS:
+        if category in selected_categories:
             continue
-        strongest = max(category_candidates, key=headline_popularity_key)
-        selected.append(strongest)
-        selected_cluster_keys.add(strongest.cluster_key)
+        category_candidates = sorted(
+            (
+                item
+                for item in eligible
+                if item.cluster_key not in selected_cluster_keys
+                and story_category(item.story) == category
+            ),
+            key=headline_popularity_key,
+            reverse=True,
+        )
+        for item in category_candidates:
+            if add_item(item, MAX_HEADLINES_PER_OUTLET + 1):
+                selected_categories.add(category)
+                break
         if len(selected) >= limit:
             return selected
 
     for item in sorted(eligible, key=headline_popularity_key, reverse=True):
         if len(selected) >= limit:
             break
-        if item.cluster_key in selected_cluster_keys:
-            continue
-        selected.append(item)
-        selected_cluster_keys.add(item.cluster_key)
+        add_item(item, MAX_HEADLINES_PER_OUTLET)
+
+    for item in sorted(eligible, key=headline_popularity_key, reverse=True):
+        if len(selected) >= limit:
+            break
+        add_item(item, MAX_HEADLINES_PER_OUTLET + 1)
+
+    # A sparse or partially failed feed pool should still return the requested
+    # number of headlines; source limits relax only after diverse choices run out.
+    for item in sorted(eligible, key=headline_popularity_key, reverse=True):
+        if len(selected) >= limit:
+            break
+        add_item(item, None)
     return selected
 
 
@@ -5705,6 +5915,9 @@ def build_headline_batch(
     batch = sort_headlines_by_age(batch)
     refresh_key = utc_now().isoformat()
     st.session_state.current_cluster_keys = [item.cluster_key for item in batch]
+    st.session_state.current_representative_ids = {
+        item.cluster_key: item.story.id for item in batch
+    }
     mark_batch_shown(batch, refresh_key)
     return batch
 
@@ -5812,6 +6025,7 @@ def render_admin(errors: Sequence[str], batch_size: int) -> None:
             if st.button("Clear 24-hour history", use_container_width=True):
                 st.session_state.shown_cluster_history = {}
                 st.session_state.current_cluster_keys = []
+                st.session_state.current_representative_ids = {}
                 st.rerun()
 
         render_keyword_boosters()
@@ -5875,6 +6089,8 @@ def main() -> None:
 
     if "current_cluster_keys" not in st.session_state:
         st.session_state.current_cluster_keys = []
+    if "current_representative_ids" not in st.session_state:
+        st.session_state.current_representative_ids = {}
     if "last_settings" not in st.session_state:
         st.session_state.last_settings = None
     if "deep_analyses" not in st.session_state:
@@ -5944,6 +6160,7 @@ def main() -> None:
     )
     if st.session_state.last_settings != current_settings:
         st.session_state.current_cluster_keys = []
+        st.session_state.current_representative_ids = {}
         st.session_state.last_settings = current_settings
 
     with st.spinner("Building a stronger story list..."):

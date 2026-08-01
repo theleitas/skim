@@ -1,5 +1,7 @@
+import gzip
 import inspect
 import unittest
+from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -77,6 +79,34 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertNotIn("newsletter", cleaned.lower())
         self.assertEqual(cleaned.count("state epidemiologists"), 1)
+
+    def test_gzipped_feed_payload_is_decompressed(self) -> None:
+        feed = b"<rss><channel><title>Global News</title></channel></rss>"
+
+        self.assertEqual(app.decompress_feed_payload(gzip.compress(feed)), feed)
+        self.assertEqual(app.decompress_feed_payload(feed), feed)
+
+    def test_direct_feed_keeps_publication_name_over_embedded_credit(self) -> None:
+        source = app.NewsSource(
+            "NBC News",
+            "https://example.com/feed",
+            "Major News",
+            ("World",),
+        )
+        feed = b"""
+        <rss><channel><item>
+          <title>Leaders announce emergency regional agreement</title>
+          <link>https://example.com/agreement</link>
+          <source>Reuters / Photo credit</source>
+          <description>Officials announced the agreement after two days of negotiations.</description>
+          <pubDate>Sat, 01 Aug 2026 20:00:00 GMT</pubDate>
+        </item></channel></rss>
+        """
+
+        stories, error = app.parse_source_feed(source, feed)
+
+        self.assertIsNone(error)
+        self.assertEqual(stories[0].source, "NBC News")
 
     def test_evidence_gate_requires_relevant_full_text(self) -> None:
         relevant_sentence = (
@@ -675,7 +705,7 @@ class ArticlePipelineTests(unittest.TestCase):
             score: float,
         ) -> app.RankedStory:
             return app.RankedStory(
-                story=self.news_story(story_id, title, "Major News"),
+                story=self.news_story(story_id, title, f"{story_id} News"),
                 cluster_key=f"{story_id}-cluster",
                 references=max(1, int(score // 100)),
                 topic_story_count=max(1, int(score // 100)),
@@ -703,6 +733,73 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertIn("conflict-top", {item.story.id for item in reserved})
         self.assertNotIn("conflict-next", {item.story.id for item in reserved})
         self.assertEqual(filled[-1].story.id, "conflict-next")
+
+    def test_headline_selection_switches_publishers_before_overindexing(self) -> None:
+        alternatives = ("Reuters", "BBC News", "Al Jazeera")
+        candidates = []
+        for index in range(5):
+            primary = self.news_story(
+                f"abc-{index}",
+                f"Global summit reaches major agreement number {index}",
+                "ABC Australia",
+            )
+            article_candidates = (primary,)
+            if index >= 2:
+                alternate = replace(
+                    primary,
+                    id=f"alternate-{index}",
+                    source=alternatives[index - 2],
+                    link=f"https://example.com/alternate-{index}",
+                )
+                article_candidates = (primary, alternate)
+            candidates.append(
+                app.RankedStory(
+                    story=primary,
+                    cluster_key=f"global-{index}",
+                    references=len(article_candidates),
+                    topic_story_count=len(article_candidates),
+                    score=100 - index,
+                    article_candidates=article_candidates,
+                )
+            )
+
+        selected = app.select_balanced_headlines(candidates, set(), limit=5)
+        source_counts = Counter(app.outlet_identity(item.story.source) for item in selected)
+
+        self.assertEqual({item.cluster_key for item in selected}, {f"global-{i}" for i in range(5)})
+        self.assertLessEqual(max(source_counts.values()), app.MAX_HEADLINES_PER_OUTLET)
+        self.assertEqual(source_counts["abc australia"], 2)
+
+    def test_current_batch_preserves_selected_cluster_publisher(self) -> None:
+        primary = self.news_story(
+            "abc-primary",
+            "Global leaders announce a major regional agreement",
+            "ABC Australia",
+        )
+        alternate = replace(
+            primary,
+            id="bbc-alternate",
+            source="BBC News",
+            link="https://example.com/bbc-alternate",
+        )
+        ranked = app.RankedStory(
+            story=primary,
+            cluster_key="agreement-cluster",
+            references=2,
+            topic_story_count=2,
+            score=100,
+            article_candidates=(primary, alternate),
+        )
+        state = SimpleNamespace(
+            current_cluster_keys=[ranked.cluster_key],
+            current_representative_ids={ranked.cluster_key: alternate.id},
+        )
+
+        with patch.object(app.st, "session_state", state):
+            current = app.current_batch_from_keys([ranked], {})
+
+        self.assertEqual(current[0].story.id, alternate.id)
+        self.assertEqual(current[0].story.source, "BBC News")
 
     def test_batch_timestamp_is_displayed_in_est(self) -> None:
         with patch.object(
@@ -1188,6 +1285,19 @@ class ArticlePipelineTests(unittest.TestCase):
                 "CBC News",
                 "ABC Australia",
                 "RNZ",
+                "NBC News",
+                "UN News",
+                "RFI English",
+                "Africanews",
+                "The Japan Times",
+                "The Hindu World",
+                "Times of India",
+                "Arab News",
+                "Buenos Aires Times",
+                "Yonhap News",
+                "Channel News Asia",
+                "The Times of Israel",
+                "BBC Sport",
                 "ProPublica",
                 "Politico",
                 "TechCrunch",
