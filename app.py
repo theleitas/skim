@@ -510,7 +510,7 @@ def page_style() -> None:
                 --skim-card: #11100f;
                 --skim-accent: #f1c45b;
                 --skim-green: #77d2a1;
-                --skim-section-gap: 0.22rem;
+                --skim-section-gap: 0.3rem;
             }
 
             *,
@@ -967,6 +967,14 @@ def page_style() -> None:
                 gap: 0 !important;
             }
 
+            /* Streamlit gives Markdown content a negative bottom margin. Custom
+               bordered blocks must cancel it so the next section starts after
+               the visible border, not inside it. */
+            .st-key-headline_feed [class*="st-key-summary_section_"]
+            [data-testid="stMarkdownContainer"]:has(.summary-grid) {
+                margin-bottom: 0 !important;
+            }
+
             .summary-field {
                 border-top: 1px solid #332f29;
                 min-width: 0;
@@ -1003,6 +1011,12 @@ def page_style() -> None:
             [data-testid="stElementContainer"] {
                 height: auto !important;
                 min-height: 0 !important;
+            }
+
+            .st-key-headline_feed [class*="st-key-deep_analysis_"]
+            > [data-testid="stElementContainer"]:last-child
+            [data-testid="stMarkdownContainer"] {
+                margin-bottom: 0 !important;
             }
 
             .ai-working-box {

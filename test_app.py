@@ -799,6 +799,22 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertIn("min-height: 2.75rem !important", css)
         self.assertIn("overflow: hidden", css)
 
+    def test_expanded_story_sections_reserve_space_for_visible_borders(self) -> None:
+        with patch.object(app.st, "markdown") as markdown:
+            app.page_style()
+
+        css = markdown.call_args.args[0]
+        self.assertIn("--skim-section-gap: 0.3rem", css)
+        self.assertIn(
+            '[data-testid="stMarkdownContainer"]:has(.summary-grid)',
+            css,
+        )
+        self.assertIn(
+            '> [data-testid="stElementContainer"]:last-child',
+            css,
+        )
+        self.assertGreaterEqual(css.count("margin-bottom: 0 !important"), 2)
+
     def test_research_topic_brief_is_simple_and_tracks_openai_cost(self) -> None:
         evidence_text = " ".join(
             "Officials asked epidemiologists to review whether the reported cases exceed expectations."
