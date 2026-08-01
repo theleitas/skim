@@ -914,13 +914,13 @@ def page_style() -> None:
                 font-size: var(--story-title-size, 1.575rem) !important;
                 line-height: 1.14 !important;
                 margin: 0 !important;
+                padding: 0 0 0.12rem !important;
                 color: var(--skim-ink);
                 max-width: 34rem;
-                display: -webkit-box;
-                -webkit-box-orient: vertical;
-                -webkit-line-clamp: 2;
+                display: -webkit-box !important;
+                -webkit-box-orient: vertical !important;
+                -webkit-line-clamp: 2 !important;
                 line-clamp: 2;
-                max-height: 2.28em;
                 overflow: hidden;
                 overflow-wrap: anywhere;
             }

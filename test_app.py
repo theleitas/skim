@@ -871,6 +871,8 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertIn("grid-template-columns: minmax(0, 3fr) minmax(4.25rem, 1fr)", css)
         self.assertIn("border: 2px solid var(--skim-category, var(--skim-accent))", css)
         self.assertIn("font-size: 1.16rem", css)
+        self.assertIn("padding: 0 0 0.12rem !important", css)
+        self.assertNotIn("max-height: 2.28em", css)
 
     def test_questions_render_after_deeper_analysis(self) -> None:
         source = inspect.getsource(app.render_story_details)
