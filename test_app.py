@@ -869,6 +869,7 @@ class ArticlePipelineTests(unittest.TestCase):
         css = markdown.call_args.args[0]
         self.assertIn("flex-wrap: nowrap", css)
         self.assertIn("grid-template-columns: minmax(0, 3fr) minmax(4.25rem, 1fr)", css)
+        self.assertIn("align-items: center", css)
         self.assertIn("border: 2px solid var(--skim-category, var(--skim-accent))", css)
         self.assertIn("font-size: 1.16rem", css)
         self.assertIn("padding: 0 0 0.12rem !important", css)

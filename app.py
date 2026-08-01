@@ -933,7 +933,7 @@ def page_style() -> None:
             .expanded-story-header {
                 display: grid;
                 grid-template-columns: minmax(0, 3fr) minmax(5.5rem, 1fr);
-                align-items: start;
+                align-items: center;
                 gap: 0.75rem;
                 padding-bottom: 0.8rem;
                 width: 100%;
