@@ -484,6 +484,7 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertIsNotNone(attempt.card)
         self.assertEqual(attempt.card["__headline"], self.good_card()["headline"])
+        self.assertNotIn("Learn More", attempt.card)
         repair.assert_called_once()
 
     def test_openai_cost_applies_cached_and_cache_write_rates(self) -> None:
@@ -527,57 +528,25 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertGreater(app.card_ai_cost(result), 0)
         self.assertEqual(result["__research_topic"], "Study cancer-cluster methodology.")
         self.assertEqual(result["Research trail"], "Study cancer-cluster methodology.")
-        self.assertTrue(result["Learn More"].startswith("Learn more:"))
+        self.assertNotIn("Learn More", result)
         self.assertNotIn("Learn more:", result["Research trail"])
 
-    def test_story_learning_links_returns_one_reference_and_one_wikipedia_page(self) -> None:
-        links = app.story_learning_links(self.story, ("Health", "US"))
-
-        self.assertEqual(len(links), 2)
-        self.assertFalse(app.is_wikipedia_url(links[0][1]))
-        self.assertTrue(app.is_wikipedia_url(links[1][1]))
-
-    def test_legacy_research_trail_links_are_split_into_their_own_row(self) -> None:
+    def test_legacy_learn_more_content_is_discarded(self) -> None:
         analysis = {
             "Research trail": (
                 "Understand cancer-cluster methodology. "
                 "Learn more: [CDC health topics](https://www.cdc.gov/health-topics.html)"
-            )
+            ),
+            "Learn More": "Learn more: [Public health](https://example.com)",
         }
 
-        normalized = app.split_legacy_research_links(analysis)
+        normalized = app.normalize_research_analysis(analysis)
 
         self.assertEqual(
             normalized["Research trail"],
             "Understand cancer-cluster methodology.",
         )
-        self.assertTrue(normalized["Learn More"].startswith("Learn more:"))
-
-    def test_learn_more_stays_with_summary_before_deep_analysis(self) -> None:
-        summary = {"Learn More": "Learn more: [Source](https://example.com)"}
-
-        owner, value = app.learn_more_placement(summary, None)
-
-        self.assertEqual(owner, "summary")
-        self.assertEqual(value, summary["Learn More"])
-
-    def test_learn_more_moves_to_deep_analysis_without_duplication(self) -> None:
-        summary = {"Learn More": "Learn more: [Summary](https://example.com/summary)"}
-        analysis = {"Learn More": "Learn more: [Deep](https://example.com/deep)"}
-
-        owner, value = app.learn_more_placement(summary, analysis)
-
-        self.assertEqual(owner, "analysis")
-        self.assertEqual(value, analysis["Learn More"])
-
-    def test_deep_analysis_inherits_summary_links_when_its_links_are_missing(self) -> None:
-        summary = {"Learn More": "Learn more: [Summary](https://example.com/summary)"}
-        analysis = {"Deeper analysis": "The AI provider could not complete this request."}
-
-        owner, value = app.learn_more_placement(summary, analysis)
-
-        self.assertEqual(owner, "analysis")
-        self.assertEqual(value, summary["Learn More"])
+        self.assertNotIn("Learn More", normalized)
 
     def test_ai_cost_ledger_survives_a_file_round_trip(self) -> None:
         ledger = {

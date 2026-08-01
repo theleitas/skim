@@ -1066,15 +1066,6 @@ def page_style() -> None:
                 color: var(--skim-ink);
             }
 
-            .deep-learn-more {
-                padding-bottom: 0.2rem;
-            }
-
-            .deep-learn-more .learn-more-row {
-                margin-top: 0;
-                max-width: 100%;
-            }
-
             .st-key-headline_feed [class*="st-key-research_row_"] {
                 border-top: 1px solid #332f29;
                 display: block !important;
@@ -1154,58 +1145,6 @@ def page_style() -> None:
                     var(--skim-category, var(--skim-accent)) 55%,
                     transparent
                 );
-            }
-
-            .lesson-link {
-                display: inline-flex;
-                align-items: center;
-                border: 1px solid color-mix(
-                    in srgb,
-                    var(--skim-category, var(--skim-accent)) 72%,
-                    #383838
-                );
-                border-radius: 999px;
-                background: #030303;
-                color: var(--skim-category, var(--skim-accent)) !important;
-                padding: 0.1rem 0.38rem;
-                margin: 0.08rem 0.12rem 0.08rem 0;
-                font-size: 0.72rem;
-                line-height: 1.15;
-                max-width: 100%;
-                overflow-wrap: anywhere;
-                text-align: center;
-                text-decoration: none !important;
-                white-space: normal;
-                box-shadow: 0 0 7px color-mix(
-                    in srgb,
-                    var(--skim-category, var(--skim-accent)) 28%,
-                    transparent
-                );
-            }
-
-            .learn-more-row {
-                display: flex;
-                align-items: center;
-                flex-wrap: wrap;
-                gap: 0.16rem;
-                margin-top: 0.46rem;
-                max-width: 100%;
-                min-width: 0;
-            }
-
-            .learn-more-label {
-                color: var(--skim-muted);
-                font-size: 0.72rem;
-                font-weight: 700;
-                margin-right: 0.18rem;
-                text-transform: uppercase;
-            }
-
-            .lesson-link:hover {
-                border-color: var(--skim-category, var(--skim-accent));
-                background: #090909;
-                color: var(--skim-category, var(--skim-accent)) !important;
-                text-decoration: none !important;
             }
 
             .st-key-headline_feed [class*="st-key-story_actions_"]
@@ -3040,157 +2979,6 @@ def infer_topics(story: Story) -> tuple[str, ...]:
     return tuple(matches[:4]) or story.topics[:2]
 
 
-def wikipedia_links(story: Story, topics: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
-    haystack = story_haystack(story)
-    if "wildberries" in haystack:
-        return (
-            ("Wildberries", "https://en.wikipedia.org/wiki/Wildberries"),
-            ("Russian invasion of Ukraine", "https://en.wikipedia.org/wiki/Russian_invasion_of_Ukraine"),
-            ("Drone warfare", "https://en.wikipedia.org/wiki/Drone_warfare"),
-        )
-    candidates = (
-        ("Wildberries", "Wildberries", ("wildberries",), 130),
-        ("Russian invasion of Ukraine", "Russian_invasion_of_Ukraine", ("ukraine", "russia's attacks", "russian", "drone"), 90),
-        ("Drone warfare", "Drone_warfare", ("drone", "drones", "unmanned"), 85),
-        ("Economy of Russia", "Economy_of_Russia", ("russia", "russian business", "businesses under strain"), 70),
-        ("Strait of Hormuz", "Strait_of_Hormuz", ("hormuz",), 120),
-        ("Iran", "Iran", ("iran", "tehran"), 80),
-        ("Saudi Arabia", "Saudi_Arabia", ("saudi",), 80),
-        ("Tariff", "Tariff", ("tariff", "trade crosshairs"), 100),
-        ("Protectionism", "Protectionism", ("tariff", "trade", "imports", "exports"), 65),
-        ("Supply chain", "Supply_chain", ("supply chain", "shipping", "ports", "warehouse", "warehouses"), 75),
-        ("Nuclear power", "Nuclear_power", ("nuclear",), 85),
-        ("International relations", "International_relations", ("diplomacy", "alliance", "treaty"), 70),
-        ("Artificial intelligence", "Artificial_intelligence", (" ai ", "artificial intelligence", "openai", "model"), 95),
-        ("Cloud computing", "Cloud_computing", ("cloud",), 70),
-        ("Social media", "Social_media", ("social media", "meta", "reddit", "x "), 90),
-        ("Algorithm", "Algorithm", ("algorithm",), 65),
-        ("Climate change", "Climate_change", ("climate", "temperature", "warming", "heat"), 95),
-        ("Public health", "Public_health", ("health", "hospital", "vaccine", "disease"), 85),
-        ("Financial market", "Financial_market", ("market", "earnings", "stocks"), 75),
-        ("Human rights", "Human_rights", ("protest", "rights", "censorship"), 85),
-        ("Cybersecurity", "Computer_security", ("cyber", "hack", "data breach"), 90),
-        ("Cultural heritage", "Cultural_heritage", ("louvre", "museum", "jewel", "artifact", "heritage"), 80),
-    )
-    scored: list[tuple[int, str, str]] = []
-    for label, slug, needles, weight in candidates:
-        matches = sum(1 for needle in needles if needle in haystack)
-        if matches:
-            scored.append((weight + (matches * 12), label, f"https://en.wikipedia.org/wiki/{slug}"))
-
-    fallback_links: list[tuple[str, str]] = []
-    if "Business" in topics:
-        fallback_links.extend((
-            ("Economics", "https://en.wikipedia.org/wiki/Economics"),
-            ("Supply chain", "https://en.wikipedia.org/wiki/Supply_chain"),
-        ))
-    if "Tech" in topics or "AI" in topics:
-        fallback_links.extend((
-            ("Technology", "https://en.wikipedia.org/wiki/Technology"),
-            ("Artificial intelligence", "https://en.wikipedia.org/wiki/Artificial_intelligence"),
-        ))
-    if "Health" in topics:
-        fallback_links.append(("Public health", "https://en.wikipedia.org/wiki/Public_health"))
-    if "Science" in topics:
-        fallback_links.append(("Science", "https://en.wikipedia.org/wiki/Science"))
-    if "Politics" in topics or "World" in topics or "US" in topics:
-        fallback_links.extend((
-            ("International relations", "https://en.wikipedia.org/wiki/International_relations"),
-            ("Geopolitics", "https://en.wikipedia.org/wiki/Geopolitics"),
-        ))
-    fallback_links.append(("Current events", "https://en.wikipedia.org/wiki/Portal:Current_events"))
-
-    ranked_links = [(label, url) for _, label, url in sorted(scored, reverse=True)]
-    ranked_links.extend(fallback_links)
-
-    unique_links: list[tuple[str, str]] = []
-    seen_urls: set[str] = set()
-    for label, url in ranked_links:
-        if url in seen_urls:
-            continue
-        unique_links.append((label, url))
-        seen_urls.add(url)
-        if len(unique_links) == 3:
-            break
-    return tuple(unique_links)
-
-
-def is_wikipedia_url(url: str) -> bool:
-    return urllib.parse.urlparse(url).netloc.lower().endswith("wikipedia.org")
-
-
-def google_news_search_link(story: Story) -> tuple[str, str]:
-    query = urllib.parse.quote_plus(clean_headline_source(story.title))
-    return ("Related coverage", f"https://news.google.com/search?q={query}&hl=en-US&gl=US&ceid=US:en")
-
-
-def source_site_link(story: Story) -> tuple[str, str] | None:
-    parsed = urllib.parse.urlparse(story.link)
-    if not parsed.scheme or not parsed.netloc or "wikipedia.org" in parsed.netloc:
-        return None
-    domain = parsed.netloc.removeprefix("www.")
-    if domain in {"news.google.com", "google.com"}:
-        return None
-    return (story.source, f"{parsed.scheme}://{parsed.netloc}")
-
-
-def reference_links(story: Story, topics: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
-    haystack = story_haystack(story)
-    candidates = (
-        ("AP Russia-Ukraine hub", "https://apnews.com/hub/russia-ukraine", ("ukraine", "russia", "russian", "drone"), 120),
-        ("ISW Ukraine updates", "https://www.understandingwar.org/backgrounder/ukraine-conflict-updates", ("ukraine", "russia", "drone", "war"), 115),
-        ("CFR backgrounders", "https://www.cfr.org/backgrounders", ("war", "diplomacy", "alliance", "geopolitics", "election"), 80),
-        ("Reuters world coverage", "https://www.reuters.com/world/", ("war", "strike", "diplomacy", "government", "election"), 70),
-        ("WTO trade topics", "https://www.wto.org/english/tratop_e/tratop_e.htm", ("tariff", "trade", "imports", "exports"), 115),
-        ("World Bank data", "https://data.worldbank.org/", ("economy", "market", "inflation", "trade", "business"), 80),
-        ("NIST AI resources", "https://www.nist.gov/artificial-intelligence", (" ai ", "artificial intelligence", "model", "algorithm"), 115),
-        ("Stanford AI Index", "https://aiindex.stanford.edu/", (" ai ", "artificial intelligence", "openai", "model"), 110),
-        ("CISA cyber guidance", "https://www.cisa.gov/topics/cybersecurity-best-practices", ("cyber", "hack", "breach", "ransomware"), 120),
-        ("NASA climate", "https://climate.nasa.gov/", ("climate", "warming", "temperature", "heat"), 115),
-        ("IPCC reports", "https://www.ipcc.ch/reports/", ("climate", "emissions", "warming"), 105),
-        ("WHO news", "https://www.who.int/news", ("health", "disease", "vaccine", "outbreak"), 110),
-        ("CDC health topics", "https://www.cdc.gov/health-topics.html", ("health", "disease", "vaccine", "outbreak"), 95),
-        ("UNESCO heritage", "https://www.unesco.org/en/culture", ("museum", "heritage", "artifact", "louvre", "culture"), 110),
-        ("Pew Research", "https://www.pewresearch.org/", ("social media", "platform", "election", "public opinion"), 80),
-    )
-    scored: list[tuple[int, str, str]] = []
-    for label, url, needles, weight in candidates:
-        matches = sum(1 for needle in needles if needle in haystack)
-        if matches:
-            scored.append((weight + (matches * 10), label, url))
-
-    ranked_links = [(label, url) for _, label, url in sorted(scored, reverse=True)]
-    ranked_links.append(google_news_search_link(story))
-    source_link = source_site_link(story)
-    if source_link:
-        ranked_links.append(source_link)
-    if "Business" in topics:
-        ranked_links.append(("Financial Times markets", "https://www.ft.com/markets"))
-    if "Tech" in topics or "AI" in topics:
-        ranked_links.append(("MIT Technology Review", "https://www.technologyreview.com/"))
-    if "Politics" in topics or "World" in topics or "US" in topics:
-        ranked_links.append(("Council on Foreign Relations", "https://www.cfr.org/"))
-
-    unique_links: list[tuple[str, str]] = []
-    seen_urls: set[str] = set()
-    for label, url in ranked_links:
-        if url in seen_urls or is_wikipedia_url(url):
-            continue
-        unique_links.append((label, url))
-        seen_urls.add(url)
-        if len(unique_links) == 2:
-            break
-    return tuple(unique_links)
-
-
-def story_learning_links(story: Story, topics: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
-    reference = next(iter(reference_links(story, topics)), google_news_search_link(story))
-    wiki_link = wikipedia_links(story, topics)[0]
-    if reference[1] == wiki_link[1]:
-        reference = google_news_search_link(story)
-    return reference, wiki_link
-
-
 ARTICLE_BOILERPLATE_MARKERS = (
     "sign up for",
     "sign up to",
@@ -4124,10 +3912,6 @@ def ai_story_question_cached(
     )
 
 
-def learning_links_text(links: tuple[tuple[str, str], ...]) -> str:
-    return " ".join(f"[{label}]({url})" for label, url in links)
-
-
 def strip_markdown_links(text: str) -> str:
     return re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r"\1", text)
 
@@ -4290,7 +4074,6 @@ def smart_summarize(
 
     source_story = article_story or story
     topics = tuple(dict.fromkeys((*infer_topics(story), *infer_topics(source_story))))
-    fallback_links = story_learning_links(story, topics)
     model = ai_model(provider, deep=False)
     rss_summary = sanitize_article_text(source_story.summary_text, max_words=180)
     if not has_enough_reported_material(source_story.title, rss_summary):
@@ -4372,7 +4155,6 @@ def smart_summarize(
             "__ai_cost": f"{ai_cost:.8f}",
             "": card["summary"],
             "Background": card["background"],
-            "Learn More": f"Learn more: {learning_links_text(fallback_links)}",
         },
         ai_cost=ai_cost,
     )
@@ -4380,13 +4162,11 @@ def smart_summarize(
 
 def deeper_analysis(story: Story, evidence: ArticleEvidence) -> dict[str, str]:
     topics = infer_topics(story)
-    fallback_links = story_learning_links(story, topics)
     provider = configured_ai_provider()
     if not provider:
         return {
             "Deeper analysis": "Add OPENAI_API_KEY in Streamlit secrets to enable deeper analysis.",
             "Research trail": "Choose a focused historical, institutional, or technical topic.",
-            "Learn More": f"Learn more: {learning_links_text(fallback_links)}",
         }
 
     model = ai_model(provider, deep=True)
@@ -4411,7 +4191,6 @@ def deeper_analysis(story: Story, evidence: ArticleEvidence) -> dict[str, str]:
     if watch_next:
         result["Watch next"] = watch_next
     result["Research trail"] = research
-    result["Learn More"] = f"Learn more: {learning_links_text(fallback_links)}"
     result["__research_topic"] = research
     if provider == "openai":
         ai_cost = result_openai_cost(ai_result, model)
@@ -4587,48 +4366,7 @@ def share_sms_url(story: Story, article_url: str, display_headline: str) -> str:
 
 
 def render_summary_value(value: str) -> str:
-    link_pattern = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
-
-    def render_link_pills(link_text: str) -> str:
-        rendered_links = []
-        cursor = 0
-        for match in link_pattern.finditer(link_text):
-            lead_text = link_text[cursor : match.start()].replace(" / ", " ")
-            rendered_links.append(html.escape(lead_text))
-            label = html.escape(match.group(1))
-            url = html.escape(match.group(2), quote=True)
-            rendered_links.append(
-                f'<a class="lesson-link" href="{url}" target="_blank" rel="noopener noreferrer">{label}</a>'
-            )
-            cursor = match.end()
-        rendered_links.append(html.escape(link_text[cursor:].replace(" / ", " ")))
-        return "".join(rendered_links)
-
-    learn_more_match = re.search(r"\s*Learn more:\s*", value, flags=re.IGNORECASE)
-    if learn_more_match:
-        intro = html.escape(value[: learn_more_match.start()].strip())
-        link_text = value[learn_more_match.end() :]
-        learn_more = (
-            '<div class="learn-more-row">'
-            '<span class="learn-more-label">Learn More</span>'
-            f"{render_link_pills(link_text)}"
-            "</div>"
-        )
-        return f"{intro}{learn_more}" if intro else learn_more
-
-    rendered = []
-    cursor = 0
-    for match in link_pattern.finditer(value):
-        lead_text = value[cursor : match.start()].replace(" / ", " ")
-        rendered.append(html.escape(lead_text))
-        label = html.escape(match.group(1))
-        url = html.escape(match.group(2), quote=True)
-        rendered.append(
-            f'<a class="lesson-link" href="{url}" target="_blank" rel="noopener noreferrer">{label}</a>'
-        )
-        cursor = match.end()
-    rendered.append(html.escape(value[cursor:].replace(" / ", " ")))
-    return "".join(rendered)
+    return html.escape(strip_markdown_links(value))
 
 
 def coverage_outlet_text(ranked_story: RankedStory) -> str:
@@ -4759,8 +4497,9 @@ def ai_working_markup(message: str) -> str:
     )
 
 
-def split_legacy_research_links(analysis: dict[str, str]) -> dict[str, str]:
+def normalize_research_analysis(analysis: dict[str, str]) -> dict[str, str]:
     normalized = dict(analysis)
+    normalized.pop("Learn More", None)
     research_trail = str(normalized.get("Research trail", ""))
     split_trail = re.split(
         r"\s*Learn more:\s*",
@@ -4770,27 +4509,13 @@ def split_legacy_research_links(analysis: dict[str, str]) -> dict[str, str]:
     )
     if len(split_trail) == 2:
         normalized["Research trail"] = clean_text(split_trail[0])
-        normalized.setdefault("Learn More", f"Learn more: {split_trail[1].strip()}")
     return normalized
 
 
-def learn_more_placement(
-    summary: dict[str, str],
-    analysis: dict[str, str] | None,
-) -> tuple[str, str]:
-    summary_value = str(summary.get("Learn More", ""))
-    if analysis:
-        return "analysis", str(analysis.get("Learn More") or summary_value)
-    return "summary", summary_value
-
-
-def render_deep_analysis(
-    prepared_story: PreparedStory,
-    learn_more: str = "",
-) -> None:
+def render_deep_analysis(prepared_story: PreparedStory) -> None:
     story = prepared_story.ranked_story.story
     stored_analysis = st.session_state.deep_analyses.get(story.id)
-    analysis = split_legacy_research_links(stored_analysis) if stored_analysis else None
+    analysis = normalize_research_analysis(stored_analysis) if stored_analysis else None
     if not analysis:
         return
 
@@ -4858,19 +4583,8 @@ def render_deep_analysis(
                     unsafe_allow_html=True,
                 )
 
-        if learn_more:
-            st.markdown(
-                '<div class="deep-summary-field deep-learn-more">'
-                f"{render_summary_value(learn_more)}</div>",
-                unsafe_allow_html=True,
-            )
-
-
 def render_story_questions(prepared_story: PreparedStory) -> None:
     story = prepared_story.ranked_story.story
-    if story.id not in st.session_state.deep_analyses:
-        return
-
     questions = list(st.session_state.story_questions.get(story.id, []))
     with st.container(key=f"story_questions_{story.id}"):
         st.markdown(
@@ -4960,7 +4674,6 @@ def render_story_details(prepared_story: PreparedStory) -> None:
             analysis = deeper_analysis(story, evidence)
             st.session_state.deep_analyses[story.id] = analysis
             st.session_state.research_briefs.pop(story.id, None)
-            st.session_state.story_questions.pop(story.id, None)
             record_batch_ai_cost(
                 [],
                 f"deep-{st.session_state.batch_refresh_id}-{story.id}",
@@ -4975,26 +4688,17 @@ def render_story_details(prepared_story: PreparedStory) -> None:
             st.session_state.deep_analysis_loading_story_id = ""
             loading_slot.empty()
 
-    stored_analysis = st.session_state.deep_analyses.get(story.id)
-    analysis = split_legacy_research_links(stored_analysis) if stored_analysis else None
-    learn_more_owner, learn_more = learn_more_placement(summary, analysis)
-
     rows = ""
     for label, value in summary.items():
         if label.startswith("__") or label == "Learn More":
             continue
         label_html = f"<b>{html.escape(label)}:</b> " if label else ""
         rows += f'<div class="summary-field">{label_html}{render_summary_value(value)}</div>'
-    if learn_more_owner == "summary" and learn_more:
-        rows += (
-            '<div class="summary-field">'
-            f"{render_summary_value(learn_more)}</div>"
-        )
     with st.container(key=f"summary_section_{story.id}"):
         st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
 
-    render_deep_analysis(prepared_story, learn_more if learn_more_owner == "analysis" else "")
     render_story_questions(prepared_story)
+    render_deep_analysis(prepared_story)
 
     with st.container(key=f"story_actions_{story.id}"):
         col1, col2, col3 = st.columns([1, 1, 1], gap="small", vertical_alignment="top")
