@@ -1265,7 +1265,7 @@ def page_style() -> None:
                 border: 1px solid #30353a;
                 border-radius: 8px;
                 margin: 0 0 var(--skim-section-gap);
-                padding: 0.7rem 0.75rem 0.1rem;
+                padding: 0.7rem 0.75rem 0.55rem;
             }
 
             .story-question-heading {
@@ -1364,16 +1364,31 @@ def page_style() -> None:
 
             .st-key-headline_feed [class*="st-key-story_questions_"]
             [data-testid="stFormSubmitButton"] button {
+                align-items: center;
                 background: var(--skim-category, var(--skim-accent)) !important;
                 border: 0 !important;
                 border-radius: 0 !important;
                 box-shadow: none !important;
                 color: #000000 !important;
+                display: flex !important;
                 height: 2.8rem;
+                justify-content: center;
                 min-height: 2.8rem;
                 min-width: 2.8rem;
                 padding: 0 !important;
                 width: 2.8rem;
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stFormSubmitButton"] button::before {
+                border-bottom: 0.52rem solid transparent;
+                border-left: 0.82rem solid #000000;
+                border-top: 0.52rem solid transparent;
+                content: "";
+                display: block;
+                height: 0;
+                transform: translateX(0.06rem);
+                width: 0;
             }
 
             .st-key-headline_feed [class*="st-key-story_questions_"]
@@ -1392,9 +1407,7 @@ def page_style() -> None:
 
             .st-key-headline_feed [class*="st-key-story_questions_"]
             [data-testid="stFormSubmitButton"] [data-testid="stIconMaterial"] {
-                color: #000000 !important;
-                font-size: 1.35rem !important;
-                margin: 0 !important;
+                display: none !important;
             }
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.st-key-load-more-headlines) {

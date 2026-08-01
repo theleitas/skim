@@ -856,7 +856,12 @@ class ArticlePipelineTests(unittest.TestCase):
             "background: var(--skim-category, var(--skim-accent)) !important",
             css,
         )
+        self.assertIn("padding: 0.7rem 0.75rem 0.55rem", css)
+        self.assertIn("button::before", css)
+        self.assertIn("border-left: 0.82rem solid #000000", css)
+        self.assertIn("justify-content: center", css)
         self.assertIn('[data-testid="stIconMaterial"]', css)
+        self.assertIn("display: none !important", css)
         self.assertIn(
             "color: var(--skim-category, var(--skim-accent)) !important",
             css,
