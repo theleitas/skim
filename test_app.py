@@ -1,3 +1,4 @@
+import inspect
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -731,6 +732,10 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertEqual(markup.count('class="headline-legend"'), 1)
         self.assertEqual(markup.count('class="category-legend"'), 1)
         self.assertIn("Headlines updated as of Jul 31, 2026 at 9:22 PM EST", markup)
+        self.assertIn(">Politics</span>", markup)
+        self.assertIn(">Tech</span>", markup)
+        self.assertNotIn(">US Politics</span>", markup)
+        self.assertNotIn(">Technology</span>", markup)
 
     def test_story_question_answer_is_short_grounded_and_costed(self) -> None:
         evidence_text = " ".join(
@@ -817,6 +822,9 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertIn(':has(.ai-working-box)', css)
         self.assertIn("min-height: 2.75rem !important", css)
         self.assertIn("overflow: hidden", css)
+        self.assertIn(".ai-working-bar::before", css)
+        self.assertIn("transform: translateX(98px)", css)
+        self.assertNotIn("animation: none", css)
 
     def test_expanded_story_sections_reserve_space_for_visible_borders(self) -> None:
         with patch.object(app.st, "markdown") as markdown:
@@ -849,6 +857,92 @@ class ArticlePipelineTests(unittest.TestCase):
             css,
         )
         self.assertIn('[data-testid="stIconMaterial"]', css)
+        self.assertIn(
+            "color: var(--skim-category, var(--skim-accent)) !important",
+            css,
+        )
+
+    def test_mobile_presentation_keeps_legend_and_images_clean(self) -> None:
+        with patch.object(app.st, "markdown") as markdown:
+            app.page_style()
+
+        css = markdown.call_args.args[0]
+        self.assertIn("flex-wrap: nowrap", css)
+        self.assertIn("grid-template-columns: minmax(0, 3fr) minmax(4.25rem, 1fr)", css)
+        self.assertIn("border: 2px solid var(--skim-category, var(--skim-accent))", css)
+        self.assertIn("font-size: 1.16rem", css)
+
+    def test_questions_render_after_deeper_analysis(self) -> None:
+        source = inspect.getsource(app.render_story_details)
+
+        self.assertLess(
+            source.index("render_deep_analysis(prepared_story)"),
+            source.index("render_story_questions(prepared_story)"),
+        )
+
+    def test_article_image_prefers_open_graph_metadata(self) -> None:
+        page_html = """
+            <html><head>
+                <meta property="og:image" content="/images/lead-story.jpg">
+                <meta name="twitter:image" content="https://cdn.example.com/social.jpg">
+            </head></html>
+        """
+
+        image_url = app.extract_article_image_url(
+            page_html,
+            "https://news.example.com/world/story",
+        )
+
+        self.assertEqual(image_url, "https://news.example.com/images/lead-story.jpg")
+
+    def test_article_image_falls_back_to_json_ld(self) -> None:
+        page_html = """
+            <html><head><script type="application/ld+json">
+                {"@type":"NewsArticle","image":{"url":"https://cdn.example.com/report.webp"}}
+            </script></head></html>
+        """
+
+        image_url = app.extract_article_image_url(
+            page_html,
+            "https://news.example.com/world/story",
+        )
+
+        self.assertEqual(image_url, "https://cdn.example.com/report.webp")
+
+    def test_prepared_publisher_image_takes_priority(self) -> None:
+        feed_story = replace(self.story, image_url="https://example.com/feed.jpg")
+        publisher_story = replace(
+            self.story,
+            id="publisher-story",
+            image_url="https://example.com/publisher-feed.jpg",
+        )
+        ranked = app.RankedStory(
+            story=feed_story,
+            cluster_key="image-story",
+            references=2,
+            topic_story_count=2,
+            score=1.0,
+            article_candidates=(publisher_story,),
+        )
+        evidence = app.ArticleEvidence(
+            url=publisher_story.link,
+            title=publisher_story.title,
+            text="Reported article text.",
+            word_count=3,
+            image_url="https://example.com/open-graph.jpg",
+        )
+        prepared = app.PreparedStory(
+            ranked_story=ranked,
+            evidence=evidence,
+            card=self.good_card(),
+            article_story=publisher_story,
+        )
+
+        self.assertEqual(
+            app.ranked_story_image_url(ranked, prepared),
+            "https://example.com/open-graph.jpg",
+        )
+        self.assertEqual(app.STORY_ACTION_LABELS, ("Full Story", "Go Deeper", "Share"))
 
     def test_research_topic_brief_is_simple_and_tracks_openai_cost(self) -> None:
         evidence_text = " ".join(
@@ -1281,7 +1375,7 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertLess(long_mobile, short_mobile)
         self.assertGreaterEqual(full_width_desktop, long_desktop)
         self.assertGreaterEqual(long_desktop, 1.0)
-        self.assertGreaterEqual(long_mobile, 0.72)
+        self.assertGreaterEqual(long_mobile, 0.9)
 
     def test_category_prefers_headline_signals_over_incidental_summary_words(self) -> None:
         economy_story = self.news_story(

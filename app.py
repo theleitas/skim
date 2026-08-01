@@ -139,6 +139,7 @@ class ArticleEvidence:
     title: str
     text: str
     word_count: int
+    image_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -421,6 +422,13 @@ CATEGORY_COLORS = {
     "Economy": "#ffe600",
 }
 
+LEGEND_LABELS = {
+    "US Politics": "Politics",
+    "Technology": "Tech",
+}
+
+STORY_ACTION_LABELS = ("Full Story", "Go Deeper", "Share")
+
 CATEGORY_TERMS = {
     "Conflict": (
         "airstrike", "armed conflict", "armed forces", "attack", "bombing", "ceasefire", "drone",
@@ -585,25 +593,34 @@ def page_style() -> None:
 
             .category-legend {
                 display: flex;
-                flex-wrap: wrap;
-                gap: 0.3rem;
+                flex-wrap: nowrap;
+                gap: 0;
+                border-radius: 999px;
+                box-shadow: 0 0 10px rgba(255, 255, 255, 0.14);
+                overflow: hidden;
                 width: 100%;
             }
 
             .category-legend-pill {
                 display: inline-flex;
                 align-items: center;
+                flex: 1 1 auto;
+                justify-content: center;
+                min-width: 0;
                 min-height: 1.35rem;
-                border-radius: 999px;
                 background: var(--legend-color);
-                box-shadow: 0 0 8px color-mix(in srgb, var(--legend-color) 45%, transparent);
+                box-shadow: inset -1px 0 rgba(0, 0, 0, 0.28);
                 color: #000000;
                 font-size: 0.62rem;
                 font-weight: 850;
                 line-height: 1;
-                padding: 0.22rem 0.5rem;
+                padding: 0.22rem 0.42rem;
                 text-transform: uppercase;
                 white-space: nowrap;
+            }
+
+            .category-legend-pill:last-child {
+                box-shadow: none;
             }
 
             .ai-cost-strip {
@@ -846,23 +863,23 @@ def page_style() -> None:
                 color: #8390a1;
                 font-size: 0.7rem;
                 line-height: 1.15;
-                margin: 0;
             }
 
             .compact-headline-meta {
+                margin: 0.14rem 0 0.17rem;
                 white-space: nowrap;
                 overflow: hidden;
             }
 
             .compact-headline-time {
                 font-size: 0.68rem;
-                margin-top: 0.02rem;
+                margin: 0;
             }
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker)
             [data-testid="stElementContainer"]:has(.compact-headline-meta) {
                 height: auto !important;
-                min-height: 1.58rem;
+                min-height: 1.92rem;
             }
 
             .st-key-headline_feed {
@@ -902,6 +919,8 @@ def page_style() -> None:
                 display: -webkit-box;
                 -webkit-box-orient: vertical;
                 -webkit-line-clamp: 2;
+                line-clamp: 2;
+                max-height: 2.28em;
                 overflow: hidden;
                 overflow-wrap: anywhere;
             }
@@ -926,8 +945,13 @@ def page_style() -> None:
                 aspect-ratio: 4 / 3;
                 max-height: 7.5rem;
                 object-fit: cover;
-                border: 0;
-                border-radius: 12px;
+                border: 2px solid var(--skim-category, var(--skim-accent));
+                border-radius: 10px;
+                box-shadow: 0 0 8px color-mix(
+                    in srgb,
+                    var(--skim-category, var(--skim-accent)) 30%,
+                    transparent
+                );
             }
 
             .headline-brief-divider {
@@ -1037,9 +1061,17 @@ def page_style() -> None:
             }
 
             .ai-working-bar {
-                width: 100%;
-                height: 0.625rem;
+                background: #020303;
                 border-radius: 999px;
+                box-shadow: 0 0 8px rgba(255, 255, 255, 0.18);
+                height: 0.625rem;
+                overflow: hidden;
+                position: relative;
+                width: 100%;
+            }
+
+            .ai-working-bar::before {
+                animation: skim-working-barber-pole 0.8s linear infinite;
                 background: repeating-linear-gradient(
                     115deg,
                     #39ff14 0 14px,
@@ -1050,9 +1082,12 @@ def page_style() -> None:
                     #bb86fc 70px 84px,
                     #ffe600 84px 98px
                 );
-                background-position: 0 0;
-                box-shadow: 0 0 8px rgba(255, 255, 255, 0.18);
-                animation: skim-working-barber-pole 1.15s linear infinite;
+                border-radius: 999px;
+                content: "";
+                inset: 0 auto 0 -98px;
+                position: absolute;
+                width: calc(100% + 98px);
+                will-change: transform;
             }
 
             .ai-working-copy {
@@ -1062,13 +1097,7 @@ def page_style() -> None:
             }
 
             @keyframes skim-working-barber-pole {
-                to { background-position: 98px 0; }
-            }
-
-            @media (prefers-reduced-motion: reduce) {
-                .ai-working-bar {
-                    animation: none;
-                }
+                to { transform: translateX(98px); }
             }
 
             .deep-summary-field {
@@ -1291,7 +1320,11 @@ def page_style() -> None:
             }
 
             .st-key-headline_feed [class*="st-key-story_questions_"]
-            [data-testid="stForm"] [data-baseweb="input"] {
+            [data-testid="stForm"] [data-baseweb="input"],
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stForm"] [data-baseweb="base-input"],
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stForm"] [data-testid="stTextInput"] > div > div {
                 background: #020303 !important;
                 border: 0 !important;
                 border-radius: 0 !important;
@@ -1303,9 +1336,21 @@ def page_style() -> None:
             [data-testid="stForm"] input {
                 background: transparent !important;
                 border: 0 !important;
-                color: #f0f0f0;
+                caret-color: var(--skim-category, var(--skim-accent));
+                color: var(--skim-category, var(--skim-accent)) !important;
                 min-height: 2.8rem !important;
                 padding: 0.55rem 0.72rem !important;
+                -webkit-text-fill-color: var(--skim-category, var(--skim-accent));
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stForm"] input:-webkit-autofill,
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stForm"] input:-webkit-autofill:hover,
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stForm"] input:-webkit-autofill:focus {
+                box-shadow: 0 0 0 1000px #020303 inset !important;
+                -webkit-text-fill-color: var(--skim-category, var(--skim-accent)) !important;
             }
 
             .st-key-headline_feed [class*="st-key-story_questions_"]
@@ -1599,13 +1644,13 @@ def page_style() -> None:
                 }
 
                 .category-legend {
-                    gap: 0.22rem;
+                    gap: 0;
                 }
 
                 .category-legend-pill {
                     min-height: 1.2rem;
-                    font-size: 0.55rem;
-                    padding: 0.2rem 0.38rem;
+                    font-size: 0.5rem;
+                    padding: 0.2rem 0.16rem;
                 }
 
                 .ai-cost-strip {
@@ -1626,7 +1671,7 @@ def page_style() -> None:
                 }
 
                 .expanded-story-header {
-                    grid-template-columns: minmax(0, 2.5fr) minmax(4.5rem, 1fr);
+                    grid-template-columns: minmax(0, 3fr) minmax(4.25rem, 1fr);
                     gap: 0.55rem;
                     padding-bottom: 0.7rem;
                 }
@@ -1642,7 +1687,7 @@ def page_style() -> None:
                 }
 
                 .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.compact-headline-kicker) button {
-                    font-size: 1.0584rem;
+                    font-size: 1.16rem;
                     max-height: 3.15rem;
                     white-space: normal !important;
                 }
@@ -3153,6 +3198,94 @@ def extract_json_ld_article_body(page_html: str) -> str:
     return max(bodies, key=len, default="")
 
 
+def normalize_article_image_url(value: object, article_url: str) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = html.unescape(value).strip()
+    if not candidate or candidate.startswith(("data:", "blob:")):
+        return None
+    resolved = urllib.parse.urljoin(article_url, candidate)
+    if not resolved.startswith(("https://", "http://")):
+        return None
+    return resolved
+
+
+def extract_article_image_url(page_html: str, article_url: str) -> str | None:
+    try:
+        from lxml import html as lxml_html
+    except ImportError:
+        return None
+
+    try:
+        document = lxml_html.fromstring(page_html)
+    except (ValueError, TypeError):
+        return None
+
+    metadata: dict[str, list[str]] = {}
+    for node in document.xpath("//meta[@content]"):
+        content = str(node.attrib.get("content", "")).strip()
+        for attribute in ("property", "name", "itemprop"):
+            key = str(node.attrib.get(attribute, "")).strip().lower()
+            if key and content:
+                metadata.setdefault(key, []).append(content)
+
+    for key in (
+        "og:image:secure_url",
+        "og:image:url",
+        "og:image",
+        "twitter:image:src",
+        "twitter:image",
+        "image",
+        "thumbnailurl",
+    ):
+        for value in metadata.get(key, []):
+            image_url = normalize_article_image_url(value, article_url)
+            if image_url:
+                return image_url
+
+    for node in document.xpath("//link[@href]"):
+        rel = " ".join(node.attrib.get("rel", "").lower().split())
+        if rel not in {"image_src", "preload"}:
+            continue
+        if rel == "preload" and node.attrib.get("as", "").lower() != "image":
+            continue
+        image_url = normalize_article_image_url(node.attrib.get("href"), article_url)
+        if image_url:
+            return image_url
+
+    json_ld_images: list[object] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            for key in ("image", "thumbnailUrl", "contentUrl"):
+                if key in value:
+                    json_ld_images.append(value[key])
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    for script in document.xpath('//script[@type="application/ld+json"]/text()'):
+        try:
+            visit(json.loads(html.unescape(script).strip()))
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    while json_ld_images:
+        value = json_ld_images.pop(0)
+        if isinstance(value, dict):
+            json_ld_images[:0] = [value.get("url"), value.get("contentUrl")]
+            continue
+        if isinstance(value, list):
+            json_ld_images[:0] = value
+            continue
+        image_url = normalize_article_image_url(value, article_url)
+        if image_url:
+            return image_url
+    return None
+
+
 def extract_html_paragraph_candidates(page_html: str) -> tuple[tuple[str, int], ...]:
     try:
         from lxml import html as lxml_html
@@ -3290,6 +3423,7 @@ def fetch_article_evidence(url: str, expected_title: str) -> ArticleEvidence | N
         page_html = page_bytes.decode(charset, errors="ignore")
     except LookupError:
         page_html = page_bytes.decode("utf-8", errors="ignore")
+    article_image_url = extract_article_image_url(page_html, final_url)
     try:
         article_text = extract_main_article_text(page_html, final_url, expected_title)
     except (ImportError, ValueError, TypeError, RuntimeError):
@@ -3300,6 +3434,7 @@ def fetch_article_evidence(url: str, expected_title: str) -> ArticleEvidence | N
         title=clean_headline_source(expected_title),
         text=article_text,
         word_count=len(article_text.split()),
+        image_url=article_image_url,
     )
     return evidence if article_evidence_is_sufficient(evidence) else None
 
@@ -3330,6 +3465,7 @@ def feed_story_evidence(story: Story) -> ArticleEvidence | None:
         title=clean_headline_source(story.title),
         text=feed_text,
         word_count=word_count,
+        image_url=story.image_url,
     )
 
 
@@ -4488,9 +4624,35 @@ def expanded_headline_font_sizes(display_headline: str, has_image: bool) -> tupl
     headline_length = max(1, len(clean_text(display_headline)))
     desktop_capacity = 62 if has_image else 92
     desktop_size = max(1.0, min(1.575, 1.575 * desktop_capacity / headline_length))
-    mobile_capacity = 36 if has_image else 58
-    mobile_size = max(0.72, min(1.2, 1.2 * mobile_capacity / headline_length))
+    mobile_capacity = 44 if has_image else 66
+    mobile_size = max(0.9, min(1.35, 1.35 * mobile_capacity / headline_length))
     return desktop_size, mobile_size
+
+
+def ranked_story_image_url(
+    ranked_story: RankedStory,
+    prepared_story: PreparedStory | None = None,
+) -> str | None:
+    candidates = []
+    if prepared_story:
+        candidates.extend(
+            (
+                prepared_story.evidence.image_url,
+                prepared_story.article_story.image_url
+                if prepared_story.article_story
+                else None,
+            )
+        )
+    candidates.append(ranked_story.story.image_url)
+    candidates.extend(candidate.image_url for candidate in ranked_story.article_candidates)
+    return next(
+        (
+            candidate
+            for candidate in candidates
+            if candidate and candidate.startswith(("https://", "http://"))
+        ),
+        None,
+    )
 
 
 def render_story_header(
@@ -4498,6 +4660,7 @@ def render_story_header(
     display_headline: str,
     compact: bool = False,
     headline_button_key: str | None = None,
+    prepared_story: PreparedStory | None = None,
 ) -> bool:
     story = ranked_story.story
     category = story_category(story)
@@ -4552,20 +4715,21 @@ def render_story_header(
     )
 
     story_title_text = html.escape(display_headline)
+    image_url = ranked_story_image_url(ranked_story, prepared_story)
     desktop_size, mobile_size = expanded_headline_font_sizes(
         display_headline,
-        bool(story.image_url),
+        bool(image_url),
     )
     title_style = (
         f"--story-title-size:{desktop_size:.3f}rem;"
         f"--story-title-mobile-size:{mobile_size:.3f}rem"
     )
-    if story.image_url:
-        image_url = html.escape(story.image_url, quote=True)
+    if image_url:
+        escaped_image_url = html.escape(image_url, quote=True)
         st.markdown(
             '<div class="expanded-story-header">'
             f'<h2 class="story-title" style="{title_style}">{story_title_text}</h2>'
-            f'<img class="story-image" src="{image_url}" alt="">'
+            f'<img class="story-image" src="{escaped_image_url}" alt="">'
             "</div>",
             unsafe_allow_html=True,
         )
@@ -4792,20 +4956,21 @@ def render_story_details(prepared_story: PreparedStory) -> None:
     with st.container(key=f"summary_section_{story.id}"):
         st.markdown(f'<div class="summary-grid">{rows}</div>', unsafe_allow_html=True)
 
-    render_story_questions(prepared_story)
     render_deep_analysis(prepared_story)
+    render_story_questions(prepared_story)
 
+    full_story_label, deeper_label, share_label = STORY_ACTION_LABELS
     with st.container(key=f"story_actions_{story.id}"):
         col1, col2, col3 = st.columns([1, 1, 1], gap="small", vertical_alignment="top")
         with col1:
-            st.link_button("Full story", evidence.url, use_container_width=True)
+            st.link_button(full_story_label, evidence.url, use_container_width=True)
         with col2:
-            if st.button("Deep analysis", key=f"deep-{story.id}", use_container_width=True):
+            if st.button(deeper_label, key=f"deep-{story.id}", use_container_width=True):
                 st.session_state.deep_analysis_loading_story_id = story.id
                 st.rerun()
         with col3:
             st.link_button(
-                "Share",
+                share_label,
                 share_sms_url(story, evidence.url, display_headline),
                 use_container_width=True,
             )
@@ -4814,7 +4979,11 @@ def render_story_details(prepared_story: PreparedStory) -> None:
 def render_story(prepared_story: PreparedStory) -> None:
     with st.container(border=True):
         display_headline = str(prepared_story.card.get("__headline", ""))
-        render_story_header(prepared_story.ranked_story, display_headline)
+        render_story_header(
+            prepared_story.ranked_story,
+            display_headline,
+            prepared_story=prepared_story,
+        )
         render_story_details(prepared_story)
 
 
@@ -4913,7 +5082,11 @@ def render_headline_story(
                 if prepared
                 else clean_headline_source(story.title)
             )
-            render_story_header(ranked_story, expanded_headline)
+            render_story_header(
+                ranked_story,
+                expanded_headline,
+                prepared_story=prepared,
+            )
         else:
             action_pressed = render_story_header(
                 ranked_story,
@@ -5211,7 +5384,7 @@ def render_headline_legend(target: object | None = None) -> None:
     pills = "".join(
         '<span class="category-legend-pill" '
         f'style="--legend-color:{html.escape(color, quote=True)}">'
-        f"{html.escape(category)}</span>"
+        f"{html.escape(LEGEND_LABELS.get(category, category))}</span>"
         for category, color in CATEGORY_COLORS.items()
     )
     renderer = target if target is not None else st
