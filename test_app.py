@@ -812,6 +812,14 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertEqual(link_text, "Understand cancer-cluster methodology.")
 
+    def test_ai_working_markup_uses_the_multicolor_progress_bar(self) -> None:
+        markup = app.ai_working_markup("Building brief using AI (gpt-test)...")
+
+        self.assertIn('class="ai-working-bar"', markup)
+        self.assertIn("Building brief using AI (gpt-test)...", markup)
+        self.assertNotIn("ai-working-newspaper", markup)
+        self.assertNotIn("ai-working-lightbulb", markup)
+
     def test_research_topic_brief_is_simple_and_tracks_openai_cost(self) -> None:
         evidence_text = " ".join(
             "Officials asked epidemiologists to review whether the reported cases exceed expectations."

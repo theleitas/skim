@@ -1006,79 +1006,47 @@ def page_style() -> None:
             }
 
             .ai-working-box {
-                display: flex;
-                align-items: center;
-                gap: 0.72rem;
-                min-height: 3.25rem;
-                background: #080909;
-                border: 1px solid color-mix(
-                    in srgb,
-                    var(--skim-category, var(--skim-accent)) 58%,
-                    #30353a
-                );
-                border-radius: 7px;
-                box-shadow: 0 0 16px color-mix(
-                    in srgb,
-                    var(--skim-category, var(--skim-accent)) 22%,
-                    transparent
-                );
+                display: grid;
+                gap: 0.42rem;
                 color: #eeeae3;
                 margin: 0;
-                padding: 0.62rem 0.75rem;
+                padding: 0.25rem 0 0.35rem;
+                width: 100%;
             }
 
-            .ai-working-icon {
-                position: relative;
-                flex: 0 0 1.75rem;
-                width: 1.75rem;
-                height: 1.75rem;
-                border: 1px solid var(--skim-category, var(--skim-accent));
-                border-radius: 50%;
-                box-shadow: 0 0 10px color-mix(
-                    in srgb,
-                    var(--skim-category, var(--skim-accent)) 46%,
-                    transparent
+            .ai-working-bar {
+                width: 100%;
+                height: 0.32rem;
+                border-radius: 999px;
+                background: repeating-linear-gradient(
+                    115deg,
+                    #39ff14 0 14px,
+                    #ff4f81 14px 28px,
+                    #00e5ff 28px 42px,
+                    #ccff00 42px 56px,
+                    #ff7a00 56px 70px,
+                    #bb86fc 70px 84px,
+                    #ffe600 84px 98px
                 );
-                animation: skim-working-orbit 1.5s linear infinite;
-            }
-
-            .ai-working-icon span {
-                position: absolute;
-                inset: 0;
-                display: grid;
-                place-items: center;
-                font-size: 0.92rem;
-                line-height: 1;
-            }
-
-            .ai-working-newspaper {
-                animation: skim-working-newspaper 2.4s ease-in-out infinite;
-            }
-
-            .ai-working-lightbulb {
-                animation: skim-working-lightbulb 2.4s ease-in-out infinite;
+                background-position: 0 0;
+                box-shadow: 0 0 8px rgba(255, 255, 255, 0.18);
+                animation: skim-working-barber-pole 1.15s linear infinite;
             }
 
             .ai-working-copy {
-                font-size: 0.88rem;
+                font-size: 0.8rem;
                 font-weight: 600;
                 line-height: 1.35;
             }
 
-            @keyframes skim-working-orbit {
-                to { transform: rotate(360deg); }
+            @keyframes skim-working-barber-pole {
+                to { background-position: 98px 0; }
             }
 
-            @keyframes skim-working-newspaper {
-                0%, 42% { opacity: 1; transform: scale(1); }
-                50%, 92% { opacity: 0; transform: scale(0.55); }
-                100% { opacity: 1; transform: scale(1); }
-            }
-
-            @keyframes skim-working-lightbulb {
-                0%, 42% { opacity: 0; transform: scale(0.55); }
-                50%, 92% { opacity: 1; transform: scale(1); }
-                100% { opacity: 0; transform: scale(0.55); }
+            @media (prefers-reduced-motion: reduce) {
+                .ai-working-bar {
+                    animation: none;
+                }
             }
 
             .deep-summary-field {
@@ -4785,10 +4753,7 @@ def render_story_header(
 def ai_working_markup(message: str) -> str:
     return (
         '<div class="ai-working-box" role="status">'
-        '<div class="ai-working-icon" aria-hidden="true">'
-        '<span class="ai-working-newspaper">📰</span>'
-        '<span class="ai-working-lightbulb">💡</span>'
-        "</div>"
+        '<div class="ai-working-bar" aria-hidden="true"></div>'
         f'<div class="ai-working-copy">{html.escape(message)}</div>'
         "</div>"
     )
@@ -4984,9 +4949,11 @@ def render_story_details(prepared_story: PreparedStory) -> None:
     display_headline = summary.pop("__headline")
 
     if st.session_state.deep_analysis_loading_story_id == story.id:
+        provider = configured_ai_provider()
+        model = ai_model(provider, deep=True) if provider else "not configured"
         loading_slot = st.empty()
         loading_slot.markdown(
-            ai_working_markup("Building the deeper read..."),
+            ai_working_markup(f"Building deeper brief using AI ({model})..."),
             unsafe_allow_html=True,
         )
         try:
@@ -5083,7 +5050,7 @@ def render_headline_story(
                 loading_slot = st.empty()
                 loading_slot.markdown(
                     ai_working_markup(
-                        f"Using AI ({summary_model}) to extract and summarize this story..."
+                        f"Building brief using AI ({summary_model})..."
                     ),
                     unsafe_allow_html=True,
                 )
@@ -5119,7 +5086,7 @@ def render_headline_story(
                 loading_slot = st.empty()
                 loading_slot.markdown(
                     ai_working_markup(
-                        f"Using AI ({summary_model}) to extract and summarize this story..."
+                        f"Building brief using AI ({summary_model})..."
                     ),
                     unsafe_allow_html=True,
                 )
