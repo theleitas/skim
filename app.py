@@ -5132,7 +5132,7 @@ def batch_refreshed_label() -> str:
     return formatted.replace(" 0", " ").replace(" at 0", " at ")
 
 
-def render_headline_legend() -> None:
+def render_headline_legend(target: object | None = None) -> None:
     label = batch_refreshed_label()
     updated_text = f"Headlines updated as of {label}" if label else "Headlines updating now"
     pills = "".join(
@@ -5141,7 +5141,8 @@ def render_headline_legend() -> None:
         f"{html.escape(category)}</span>"
         for category, color in CATEGORY_COLORS.items()
     )
-    st.markdown(
+    renderer = target if target is not None else st
+    renderer.markdown(
         '<div class="headline-legend">'
         f'<div class="headline-updated">{html.escape(updated_text)}</div>'
         f'<div class="category-legend">{pills}</div>'
@@ -5672,8 +5673,7 @@ def main() -> None:
             load_next_story_batch()
             st.rerun()
 
-    with batch_timestamp_slot.container():
-        render_headline_legend()
+    render_headline_legend(batch_timestamp_slot)
 
     errors.extend(st.session_state.generation_issues)
     if not batch:

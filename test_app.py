@@ -713,6 +713,25 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertEqual(label, "Jan 15, 2026 at 12:30 PM EST")
 
+    def test_headline_legend_renders_once_into_its_placeholder(self) -> None:
+        calls = []
+        target = SimpleNamespace(
+            markdown=lambda *args, **kwargs: calls.append((args, kwargs))
+        )
+
+        with patch.object(
+            app,
+            "batch_refreshed_label",
+            return_value="Jul 31, 2026 at 9:22 PM EST",
+        ):
+            app.render_headline_legend(target)
+
+        self.assertEqual(len(calls), 1)
+        markup = calls[0][0][0]
+        self.assertEqual(markup.count('class="headline-legend"'), 1)
+        self.assertEqual(markup.count('class="category-legend"'), 1)
+        self.assertIn("Headlines updated as of Jul 31, 2026 at 9:22 PM EST", markup)
+
     def test_story_question_answer_is_short_grounded_and_costed(self) -> None:
         evidence_text = " ".join(
             "Officials described the investigation and the evidence needed for the next decision."
