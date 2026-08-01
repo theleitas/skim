@@ -1016,7 +1016,7 @@ def page_style() -> None:
 
             .ai-working-bar {
                 width: 100%;
-                height: 0.32rem;
+                height: 0.625rem;
                 border-radius: 999px;
                 background: repeating-linear-gradient(
                     115deg,
@@ -4491,8 +4491,8 @@ def render_story_header(
 def ai_working_markup(message: str) -> str:
     return (
         '<div class="ai-working-box" role="status">'
-        '<div class="ai-working-bar" aria-hidden="true"></div>'
         f'<div class="ai-working-copy">{html.escape(message)}</div>'
+        '<div class="ai-working-bar" aria-hidden="true"></div>'
         "</div>"
     )
 

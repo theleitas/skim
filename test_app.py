@@ -786,6 +786,7 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertIn('class="ai-working-bar"', markup)
         self.assertIn("Building brief using AI (gpt-test)...", markup)
+        self.assertLess(markup.index("ai-working-copy"), markup.index("ai-working-bar"))
         self.assertNotIn("ai-working-newspaper", markup)
         self.assertNotIn("ai-working-lightbulb", markup)
 
