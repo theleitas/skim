@@ -1263,25 +1263,93 @@ def page_style() -> None:
                 padding-bottom: 0.55rem;
             }
 
-            .st-key-headline_feed [class*="st-key-story_questions_"] input {
-                min-height: 2.8rem !important;
-                background: #020303;
-                border-color: color-mix(
-                    in srgb,
-                    var(--skim-category, var(--skim-accent)) 58%,
-                    #454545
-                );
-                color: #f0f0f0;
-            }
-
             .st-key-headline_feed [class*="st-key-story_questions_"] [data-testid="stForm"] {
-                border: 0;
+                background: #020303;
+                border: 1px solid var(--skim-category, var(--skim-accent));
+                border-radius: 7px;
+                box-shadow: 0 0 8px color-mix(
+                    in srgb,
+                    var(--skim-category, var(--skim-accent)) 22%,
+                    transparent
+                );
+                overflow: hidden;
                 padding: 0;
             }
 
             .st-key-headline_feed [class*="st-key-story_questions_"]
-            [data-testid="stFormSubmitButton"] {
-                display: none !important;
+            [data-testid="stForm"] > div[data-testid="stVerticalBlock"] {
+                align-items: stretch;
+                display: grid !important;
+                gap: 0 !important;
+                grid-template-columns: minmax(0, 1fr) 2.8rem;
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stForm"] [data-testid="stElementContainer"] {
+                margin: 0 !important;
+                min-width: 0;
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stForm"] [data-baseweb="input"] {
+                background: #020303 !important;
+                border: 0 !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
+                min-height: 2.8rem !important;
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stForm"] input {
+                background: transparent !important;
+                border: 0 !important;
+                color: #f0f0f0;
+                min-height: 2.8rem !important;
+                padding: 0.55rem 0.72rem !important;
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stFormSubmitButton"],
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stFormSubmitButton"] .stButton {
+                display: block !important;
+                height: 100%;
+                width: 100%;
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stFormSubmitButton"] button {
+                background: var(--skim-category, var(--skim-accent)) !important;
+                border: 0 !important;
+                border-radius: 0 !important;
+                box-shadow: none !important;
+                color: #000000 !important;
+                height: 2.8rem;
+                min-height: 2.8rem;
+                min-width: 2.8rem;
+                padding: 0 !important;
+                width: 2.8rem;
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stFormSubmitButton"] button:hover,
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stFormSubmitButton"] button:focus {
+                background: var(--skim-category, var(--skim-accent)) !important;
+                color: #000000 !important;
+                filter: brightness(1.1);
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stFormSubmitButton"] button p {
+                display: none;
+            }
+
+            .st-key-headline_feed [class*="st-key-story_questions_"]
+            [data-testid="stFormSubmitButton"] [data-testid="stIconMaterial"] {
+                color: #000000 !important;
+                font-size: 1.35rem !important;
+                margin: 0 !important;
             }
 
             .st-key-headline_feed > [data-testid="stLayoutWrapper"]:has(.st-key-load-more-headlines) {
@@ -4631,7 +4699,12 @@ def render_story_questions(prepared_story: PreparedStory) -> None:
                 placeholder="Type a question here",
                 label_visibility="collapsed",
             )
-            submitted = st.form_submit_button("Submit question")
+            submitted = st.form_submit_button(
+                "Ask AI",
+                help="Send this question to AI",
+                icon=":material/play_arrow:",
+                use_container_width=True,
+            )
 
         if submitted and clean_text(question):
             provider = configured_ai_provider()

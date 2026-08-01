@@ -834,6 +834,22 @@ class ArticlePipelineTests(unittest.TestCase):
         )
         self.assertGreaterEqual(css.count("margin-bottom: 0 !important"), 2)
 
+    def test_story_question_control_has_category_play_button(self) -> None:
+        with patch.object(app.st, "markdown") as markdown:
+            app.page_style()
+
+        css = markdown.call_args.args[0]
+        self.assertIn(
+            "border: 1px solid var(--skim-category, var(--skim-accent))",
+            css,
+        )
+        self.assertIn("grid-template-columns: minmax(0, 1fr) 2.8rem", css)
+        self.assertIn(
+            "background: var(--skim-category, var(--skim-accent)) !important",
+            css,
+        )
+        self.assertIn('[data-testid="stIconMaterial"]', css)
+
     def test_research_topic_brief_is_simple_and_tracks_openai_cost(self) -> None:
         evidence_text = " ".join(
             "Officials asked epidemiologists to review whether the reported cases exceed expectations."
