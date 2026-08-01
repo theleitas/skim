@@ -790,6 +790,15 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertNotIn("ai-working-newspaper", markup)
         self.assertNotIn("ai-working-lightbulb", markup)
 
+    def test_ai_working_wrapper_reserves_space_for_the_full_bar(self) -> None:
+        with patch.object(app.st, "markdown") as markdown:
+            app.page_style()
+
+        css = markdown.call_args.args[0]
+        self.assertIn(':has(.ai-working-box)', css)
+        self.assertIn("min-height: 2.75rem !important", css)
+        self.assertIn("overflow: hidden", css)
+
     def test_research_topic_brief_is_simple_and_tracks_openai_cost(self) -> None:
         evidence_text = " ".join(
             "Officials asked epidemiologists to review whether the reported cases exceed expectations."

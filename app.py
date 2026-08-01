@@ -1006,12 +1006,20 @@ def page_style() -> None:
             }
 
             .ai-working-box {
+                box-sizing: border-box;
                 display: grid;
                 gap: 0.42rem;
                 color: #eeeae3;
                 margin: 0;
+                overflow: hidden;
                 padding: 0.25rem 0 0.35rem;
                 width: 100%;
+            }
+
+            [data-testid="stElementContainer"]:has(.ai-working-box) {
+                height: fit-content !important;
+                min-height: 2.75rem !important;
+                overflow: hidden;
             }
 
             .ai-working-bar {
