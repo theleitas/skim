@@ -654,21 +654,77 @@ class ArticlePipelineTests(unittest.TestCase):
             "last_settings": ("old",),
         }
         query_params = {}
-        with (
-            patch.object(app.st, "session_state", state),
-            patch.object(app.st, "query_params", query_params),
-        ):
-            app.lock_keyword_slot(3)
+        with TemporaryDirectory() as temporary_directory:
+            with (
+                patch.object(app.st, "session_state", state),
+                patch.object(app.st, "query_params", query_params),
+                patch.object(
+                    app,
+                    "KEYWORD_LEDGER_PATH",
+                    Path(temporary_directory) / ".skim_keywords.json",
+                ),
+            ):
+                app.lock_keyword_slot(3)
 
-            self.assertEqual(state["saved_keyword_3"], "Climate policy")
-            self.assertEqual(query_params["kw4"], "Climate policy")
-            self.assertIsNone(state["last_settings"])
+                self.assertEqual(state["saved_keyword_3"], "Climate policy")
+                self.assertEqual(query_params["kw4"], "Climate policy")
+                self.assertIn(app.KEYWORD_QUERY_UPDATED, query_params)
+                self.assertIsNone(state["last_settings"])
 
-            app.clear_keyword_slot(3)
+                app.clear_keyword_slot(3)
+                persisted_after_clear = app.read_keyword_ledger()
 
         self.assertEqual(state["saved_keyword_3"], "")
         self.assertEqual(state["keyword_draft_3"], "")
         self.assertNotIn("kw4", query_params)
+        self.assertFalse(any(persisted_after_clear["keywords"]))
+
+    def test_keywords_survive_a_fresh_streamlit_session(self) -> None:
+        first_state = {
+            "keyword_draft_0": "Semiconductors",
+            "saved_keyword_0": "",
+            "last_settings": None,
+        }
+        first_query_params = {}
+        with TemporaryDirectory() as temporary_directory:
+            ledger_path = Path(temporary_directory) / ".skim_keywords.json"
+            with (
+                patch.object(app.st, "session_state", first_state),
+                patch.object(app.st, "query_params", first_query_params),
+                patch.object(app, "KEYWORD_LEDGER_PATH", ledger_path),
+            ):
+                app.lock_keyword_slot(0)
+
+            fresh_state = {}
+            with (
+                patch.object(app.st, "session_state", fresh_state),
+                patch.object(app.st, "query_params", {}),
+                patch.object(app, "KEYWORD_LEDGER_PATH", ledger_path),
+            ):
+                app.initialize_keyword_state()
+                restored_keywords = app.custom_keywords()
+
+        self.assertEqual(fresh_state["saved_keyword_0"], "Semiconductors")
+        self.assertEqual(restored_keywords, ("Semiconductors",))
+
+    def test_newer_query_keywords_restore_after_an_app_redeploy(self) -> None:
+        query_params = {
+            "kw2": "Ukraine",
+            app.KEYWORD_QUERY_UPDATED: "500",
+        }
+        state = {}
+        with TemporaryDirectory() as temporary_directory:
+            ledger_path = Path(temporary_directory) / ".skim_keywords.json"
+            with (
+                patch.object(app.st, "session_state", state),
+                patch.object(app.st, "query_params", query_params),
+                patch.object(app, "KEYWORD_LEDGER_PATH", ledger_path),
+            ):
+                app.initialize_keyword_state()
+                restored_ledger = app.read_keyword_ledger()
+
+        self.assertEqual(state["saved_keyword_1"], "Ukraine")
+        self.assertEqual(restored_ledger["keywords"][1], "Ukraine")
 
     def test_each_keyword_adds_one_unique_headline_after_the_base_batch(self) -> None:
         def ranked(story_id: str, cluster_key: str, title: str) -> app.RankedStory:

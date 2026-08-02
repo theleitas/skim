@@ -5,3 +5,5 @@ __pycache__/
 .streamlit/secrets.toml
 .skim_ai_cost_ledger.json
 .skim_ai_cost_ledger.tmp
+.skim_keywords.json
+.skim_keywords.tmp

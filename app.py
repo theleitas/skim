@@ -87,6 +87,11 @@ AI_COST_HISTORY_LIMIT = 10
 AI_COST_LEDGER_PATH = Path(__file__).with_name(".skim_ai_cost_ledger.json")
 AI_COST_BROWSER_STORAGE_KEY = "skim-ai-cost-ledger-v2"
 AI_COST_LEDGER_LOCK = threading.Lock()
+KEYWORD_SLOT_COUNT = 9
+KEYWORD_QUERY_UPDATED = "kwUpdated"
+KEYWORD_LEDGER_PATH = Path(__file__).with_name(".skim_keywords.json")
+KEYWORD_BROWSER_STORAGE_KEY = "skim-keyword-boosters-v1"
+KEYWORD_LEDGER_LOCK = threading.Lock()
 ADMIN_PASSWORD = "0102"
 EASTERN_STANDARD_TIME = timezone(timedelta(hours=-5), "EST")
 REQUEST_HEADERS = {
@@ -2587,7 +2592,7 @@ def headline_event_similarity(left_tokens: set[str], right_tokens: set[str]) -> 
 
 def custom_keywords() -> tuple[str, ...]:
     keywords = []
-    for index in range(9):
+    for index in range(KEYWORD_SLOT_COUNT):
         value = str(st.session_state.get(f"saved_keyword_{index}", "")).strip()
         if value:
             keywords.append(value)
@@ -2608,32 +2613,190 @@ def query_param_nonnegative_int(name: str) -> int:
         return 0
 
 
-def initialize_keyword_state() -> None:
-    first_load = not st.session_state.get("keyword_state_initialized", False)
-    for index in range(9):
-        saved_key = f"saved_keyword_{index}"
-        draft_key = f"keyword_draft_{index}"
-        query_key = f"kw{index + 1}"
-        if first_load:
-            legacy_value = str(st.session_state.get(f"custom_keyword_{index}", "")).strip()
-            st.session_state.setdefault(
-                saved_key,
-                query_param_text(query_key) or legacy_value,
+def empty_keyword_ledger() -> dict[str, object]:
+    return {
+        "keywords": [""] * KEYWORD_SLOT_COUNT,
+        "updated_at": 0,
+    }
+
+
+def normalize_keyword_ledger(raw: object) -> dict[str, object]:
+    ledger = empty_keyword_ledger()
+    if not isinstance(raw, dict):
+        return ledger
+    raw_keywords = raw.get("keywords", [])
+    if isinstance(raw_keywords, list):
+        ledger["keywords"] = [
+            clean_text(str(raw_keywords[index]))[:100]
+            if index < len(raw_keywords)
+            else ""
+            for index in range(KEYWORD_SLOT_COUNT)
+        ]
+    try:
+        ledger["updated_at"] = max(0, int(raw.get("updated_at", 0)))
+    except (TypeError, ValueError):
+        ledger["updated_at"] = 0
+    return ledger
+
+
+def read_keyword_ledger() -> dict[str, object]:
+    try:
+        with KEYWORD_LEDGER_LOCK:
+            raw = json.loads(KEYWORD_LEDGER_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return empty_keyword_ledger()
+    return normalize_keyword_ledger(raw)
+
+
+def write_keyword_ledger(ledger: dict[str, object]) -> None:
+    temporary_path = KEYWORD_LEDGER_PATH.with_suffix(".tmp")
+    try:
+        with KEYWORD_LEDGER_LOCK:
+            temporary_path.write_text(
+                json.dumps(normalize_keyword_ledger(ledger), separators=(",", ":")),
+                encoding="utf-8",
             )
-        else:
-            st.session_state.setdefault(saved_key, "")
-        st.session_state.setdefault(draft_key, "")
-    st.session_state.keyword_state_initialized = True
+            os.replace(temporary_path, KEYWORD_LEDGER_PATH)
+    except OSError:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
-def persist_keywords_to_query_params() -> None:
-    for index in range(9):
+def keyword_query_has_state() -> bool:
+    return KEYWORD_QUERY_UPDATED in st.query_params or any(
+        f"kw{index + 1}" in st.query_params for index in range(KEYWORD_SLOT_COUNT)
+    )
+
+
+def keyword_ledger_from_query_params() -> dict[str, object]:
+    return normalize_keyword_ledger(
+        {
+            "keywords": [
+                query_param_text(f"kw{index + 1}")
+                for index in range(KEYWORD_SLOT_COUNT)
+            ],
+            "updated_at": query_param_nonnegative_int(KEYWORD_QUERY_UPDATED),
+        }
+    )
+
+
+def current_keyword_ledger() -> dict[str, object]:
+    return normalize_keyword_ledger(
+        {
+            "keywords": [
+                st.session_state.get(f"saved_keyword_{index}", "")
+                for index in range(KEYWORD_SLOT_COUNT)
+            ],
+            "updated_at": st.session_state.get("keyword_updated_at", 0),
+        }
+    )
+
+
+def persist_keyword_state() -> None:
+    ledger = current_keyword_ledger()
+    write_keyword_ledger(ledger)
+    keywords = list(ledger["keywords"])
+    for index, value in enumerate(keywords):
         query_key = f"kw{index + 1}"
-        value = str(st.session_state.get(f"saved_keyword_{index}", "")).strip()
         if value:
             st.query_params[query_key] = value
         elif query_key in st.query_params:
             del st.query_params[query_key]
+    st.query_params[KEYWORD_QUERY_UPDATED] = str(ledger["updated_at"])
+
+
+def initialize_keyword_state() -> None:
+    if st.session_state.get("keyword_state_initialized", False):
+        for index in range(KEYWORD_SLOT_COUNT):
+            st.session_state.setdefault(f"saved_keyword_{index}", "")
+            st.session_state.setdefault(f"keyword_draft_{index}", "")
+        return
+
+    file_ledger = read_keyword_ledger()
+    query_has_state = keyword_query_has_state()
+    query_ledger = keyword_ledger_from_query_params()
+    query_keywords = list(query_ledger["keywords"])
+    file_keywords = list(file_ledger["keywords"])
+    query_is_newer = int(query_ledger["updated_at"]) > int(file_ledger["updated_at"])
+    query_is_migration = (
+        query_has_state
+        and any(query_keywords)
+        and not any(file_keywords)
+        and int(query_ledger["updated_at"]) == 0
+    )
+    ledger = query_ledger if query_is_newer or query_is_migration else file_ledger
+
+    if not any(ledger["keywords"]):
+        legacy_keywords = [
+            clean_text(str(st.session_state.get(f"custom_keyword_{index}", "")))
+            for index in range(KEYWORD_SLOT_COUNT)
+        ]
+        if any(legacy_keywords):
+            ledger = {
+                "keywords": legacy_keywords,
+                "updated_at": round(datetime.now(timezone.utc).timestamp() * 1000),
+            }
+
+    for index, value in enumerate(ledger["keywords"]):
+        st.session_state[f"saved_keyword_{index}"] = value
+        st.session_state.setdefault(f"keyword_draft_{index}", "")
+    st.session_state["keyword_updated_at"] = int(ledger["updated_at"])
+    st.session_state["keyword_query_had_state"] = query_has_state
+    st.session_state["keyword_state_initialized"] = True
+
+    if query_is_newer or query_is_migration or any(
+        st.session_state.get(f"custom_keyword_{index}", "")
+        for index in range(KEYWORD_SLOT_COUNT)
+    ):
+        if not st.session_state["keyword_updated_at"]:
+            st.session_state["keyword_updated_at"] = round(
+                datetime.now(timezone.utc).timestamp() * 1000
+            )
+        persist_keyword_state()
+
+
+def sync_keyword_browser_storage(query_had_state: bool) -> None:
+    ledger_json = json.dumps(current_keyword_ledger(), separators=(",", ":"))
+    query_names_json = json.dumps(
+        [f"kw{index + 1}" for index in range(KEYWORD_SLOT_COUNT)]
+    )
+    components.html(
+        f"""
+        <script>
+        (() => {{
+          try {{
+            const storageKey = {json.dumps(KEYWORD_BROWSER_STORAGE_KEY)};
+            const serverLedger = {ledger_json};
+            const queryNames = {query_names_json};
+            const stored = JSON.parse(window.parent.localStorage.getItem(storageKey) || "null");
+            const storedKeywords = Array.isArray(stored && stored.keywords)
+              ? stored.keywords.slice(0, queryNames.length)
+              : [];
+            const storedUpdated = Math.max(0, Number(stored && stored.updated_at) || 0);
+            const serverUpdated = Math.max(0, Number(serverLedger.updated_at) || 0);
+            if (!{str(query_had_state).lower()} && storedUpdated > serverUpdated) {{
+              const url = new URL(window.parent.location.href);
+              queryNames.forEach((queryName, index) => {{
+                const keyword = String(storedKeywords[index] || "").trim();
+                if (keyword) url.searchParams.set(queryName, keyword);
+                else url.searchParams.delete(queryName);
+              }});
+              url.searchParams.set({json.dumps(KEYWORD_QUERY_UPDATED)}, String(storedUpdated));
+              window.parent.location.replace(url.toString());
+              return;
+            }}
+            window.parent.localStorage.setItem(storageKey, JSON.stringify(serverLedger));
+          }} catch (error) {{
+            // The app-file ledger remains available if browser storage is blocked.
+          }}
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 
 def lock_keyword_slot(index: int) -> None:
@@ -2641,17 +2804,21 @@ def lock_keyword_slot(index: int) -> None:
     if not value:
         return
     st.session_state[f"saved_keyword_{index}"] = value
+    st.session_state["keyword_updated_at"] = round(
+        datetime.now(timezone.utc).timestamp() * 1000
+    )
     st.session_state["last_settings"] = None
-    st.query_params[f"kw{index + 1}"] = value
+    persist_keyword_state()
 
 
 def clear_keyword_slot(index: int) -> None:
     st.session_state[f"saved_keyword_{index}"] = ""
     st.session_state[f"keyword_draft_{index}"] = ""
+    st.session_state["keyword_updated_at"] = round(
+        datetime.now(timezone.utc).timestamp() * 1000
+    )
     st.session_state["last_settings"] = None
-    query_key = f"kw{index + 1}"
-    if query_key in st.query_params:
-        del st.query_params[query_key]
+    persist_keyword_state()
 
 
 def initialize_ai_cost_state() -> None:
@@ -5966,7 +6133,6 @@ def render_keyword_boosters() -> None:
                             on_change=lock_keyword_slot,
                             args=(keyword_index,),
                         )
-    persist_keywords_to_query_params()
 
 
 def render_admin(errors: Sequence[str], batch_size: int) -> None:
@@ -6131,6 +6297,9 @@ def main() -> None:
     st.session_state.setdefault("include_aggregators", True)
     st.session_state.setdefault("include_gdelt", False)
     initialize_keyword_state()
+    sync_keyword_browser_storage(
+        bool(st.session_state.get("keyword_query_had_state", False))
+    )
     query_had_cost_ledger = AI_COST_QUERY_TOTAL in st.query_params
     initialize_ai_cost_state()
     sync_ai_cost_browser_storage(query_had_cost_ledger)
