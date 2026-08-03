@@ -7,3 +7,5 @@ __pycache__/
 .skim_ai_cost_ledger.tmp
 .skim_keywords.json
 .skim_keywords.tmp
+.skim_shown_history.json
+.skim_shown_history.tmp

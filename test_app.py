@@ -12,6 +12,17 @@ from unittest.mock import patch
 import app
 
 
+class SessionStateDict(dict):
+    def __getattr__(self, name: str):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, name: str, value: object) -> None:
+        self[name] = value
+
+
 class ArticlePipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.story = app.Story(
@@ -86,6 +97,14 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertEqual(app.decompress_feed_payload(gzip.compress(feed)), feed)
         self.assertEqual(app.decompress_feed_payload(feed), feed)
 
+    def test_implausible_future_feed_dates_are_treated_as_unknown(self) -> None:
+        future = datetime.now(timezone.utc) + timedelta(days=30)
+
+        self.assertIsNone(app.plausible_published_date(future))
+        self.assertIsNotNone(
+            app.plausible_published_date(datetime.now(timezone.utc) + timedelta(hours=2))
+        )
+
     def test_direct_feed_keeps_publication_name_over_embedded_credit(self) -> None:
         source = app.NewsSource(
             "NBC News",
@@ -107,6 +126,15 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertIsNone(error)
         self.assertEqual(stories[0].source, "NBC News")
+
+    def test_stable_story_ids_keep_a_hash_after_long_similar_prefixes(self) -> None:
+        long_prefix = "Major international coalition announces detailed agreement " * 4
+
+        first_id = app.stable_id("BBC News", f"{long_prefix}one", "https://example.com/one")
+        second_id = app.stable_id("BBC News", f"{long_prefix}two", "https://example.com/two")
+
+        self.assertNotEqual(first_id, second_id)
+        self.assertLessEqual(len(first_id), 93)
 
     def test_evidence_gate_requires_relevant_full_text(self) -> None:
         relevant_sentence = (
@@ -131,6 +159,29 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertTrue(app.article_evidence_is_sufficient(relevant))
         self.assertFalse(app.article_evidence_is_sufficient(unrelated))
+
+    def test_article_page_title_rejects_an_unrelated_redirect(self) -> None:
+        page_html = """
+        <html><head>
+          <meta property="og:title" content="Coalition collapses after confidence vote - BBC">
+          <title>BBC News</title>
+        </head></html>
+        """
+        page_title = app.extract_article_page_title(page_html)
+
+        self.assertEqual(page_title, "Coalition collapses after confidence vote")
+        self.assertTrue(
+            app.article_page_title_is_relevant(
+                "Government coalition collapses following confidence vote",
+                page_title,
+            )
+        )
+        self.assertFalse(
+            app.article_page_title_is_relevant(
+                "Major hurricane approaches Florida coast",
+                page_title,
+            )
+        )
 
     def test_article_extraction_falls_back_to_article_paragraphs(self) -> None:
         paragraphs = "".join(
@@ -1229,6 +1280,61 @@ class ArticlePipelineTests(unittest.TestCase):
 
         self.assertEqual(sorted(len(cluster) for cluster in clusters), [1, 2])
 
+    def test_generic_headline_language_does_not_merge_unrelated_events(self) -> None:
+        stories = [
+            self.news_story(
+                "taxes",
+                "Government reports major update on municipal taxes",
+                "BBC News",
+            ),
+            self.news_story(
+                "weather",
+                "Government reports major update on coastal weather",
+                "Reuters",
+            ),
+        ]
+
+        clusters = app.cluster_stories(stories)
+
+        self.assertEqual(len(clusters), 2)
+
+    def test_indexed_clustering_matches_the_original_similarity_scan(self) -> None:
+        stories = [
+            self.news_story("kyiv-1", "Russia launches drones at Kyiv overnight", "BBC"),
+            self.news_story("economy", "Central bank cuts rates after inflation falls", "AP"),
+            self.news_story("kyiv-2", "Kyiv hit in overnight Russian drone attack", "Reuters"),
+            self.news_story("rates", "Inflation fall leads central bank to cut rates", "NPR"),
+            self.news_story("sports", "Madrid wins European football final", "Sky Sports"),
+        ]
+
+        reference_clusters = []
+        reference_headlines = []
+        for story in stories:
+            tokens = app.headline_tokens(story)
+            matched_index = None
+            best_similarity = 0.0
+            for index, existing_headlines in enumerate(reference_headlines):
+                similarity = max(
+                    app.headline_event_similarity(tokens, existing_tokens)
+                    for existing_tokens in existing_headlines
+                )
+                if similarity > best_similarity and similarity >= 0.34:
+                    matched_index = index
+                    best_similarity = similarity
+            if matched_index is None:
+                reference_clusters.append([story])
+                reference_headlines.append([tokens])
+            else:
+                reference_clusters[matched_index].append(story)
+                reference_headlines[matched_index].append(tokens)
+
+        indexed_clusters = app.cluster_stories(stories)
+
+        self.assertEqual(
+            [[story.id for story in cluster] for cluster in indexed_clusters],
+            [[story.id for story in cluster] for cluster in reference_clusters],
+        )
+
     def test_reference_count_uses_distinct_outlets_without_feed_bonuses(self) -> None:
         stories = [
             self.news_story(
@@ -1284,18 +1390,6 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertNotIn("old-single", ranked_ids)
         self.assertIn("fresh-single", ranked_ids)
         self.assertTrue({"covered-one", "covered-two"}.intersection(ranked_ids))
-
-    def test_prepared_stories_publish_as_each_one_is_appended(self) -> None:
-        batch = []
-        published = []
-        first = object()
-        second = object()
-
-        app.append_prepared_story(batch, first, lambda story, count: published.append((story, count)))
-        app.append_prepared_story(batch, second, lambda story, count: published.append((story, count)))
-
-        self.assertEqual(batch, [first, second])
-        self.assertEqual(published, [(first, 1), (second, 2)])
 
     def test_gdelt_articles_become_direct_publisher_stories(self) -> None:
         payload = {
@@ -1468,6 +1562,65 @@ class ArticlePipelineTests(unittest.TestCase):
             {call.args[0].name for call in fetch.call_args_list},
             {"Major", "Keyword: semiconductors"},
         )
+
+    def test_discovery_pipeline_is_cached_across_streamlit_reruns(self) -> None:
+        story = self.news_story(
+            "cached-discovery",
+            "Major earthquake triggers emergency response in capital",
+            "Reuters",
+        )
+        ranked = app.RankedStory(
+            story=story,
+            cluster_key="cached-discovery",
+            references=1,
+            topic_story_count=1,
+            score=100,
+        )
+        app.discover_ranked_news.clear()
+        with (
+            patch.object(app, "fetch_stories", return_value=([story], [])) as fetch,
+            patch.object(app, "rank_stories", return_value=[ranked]) as rank,
+            patch.object(app, "fetch_keyword_rankings", return_value=({}, [])) as keywords,
+        ):
+            first = app.discover_ranked_news(("Audit Cache",), True, False, (), False)
+            second = app.discover_ranked_news(("Audit Cache",), True, False, (), False)
+        app.discover_ranked_news.clear()
+
+        self.assertEqual(first, second)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(rank.call_count, 1)
+        self.assertEqual(keywords.call_count, 1)
+
+    def test_no_repeat_history_survives_a_fresh_streamlit_session(self) -> None:
+        story = self.news_story(
+            "persistent-history",
+            "Coalition government collapses after confidence vote",
+            "BBC News",
+        )
+        ranked = app.RankedStory(
+            story=story,
+            cluster_key="coalition-history-key",
+            references=2,
+            topic_story_count=2,
+            score=100,
+        )
+        with TemporaryDirectory() as temporary_directory:
+            ledger_path = Path(temporary_directory) / ".skim_shown_history.json"
+            first_state = SessionStateDict(shown_cluster_history={})
+            with (
+                patch.object(app.st, "session_state", first_state),
+                patch.object(app, "SHOWN_HISTORY_LEDGER_PATH", ledger_path),
+            ):
+                app.mark_batch_shown([ranked], "refresh-one")
+
+            fresh_state = SessionStateDict()
+            with (
+                patch.object(app.st, "session_state", fresh_state),
+                patch.object(app, "SHOWN_HISTORY_LEDGER_PATH", ledger_path),
+            ):
+                app.initialize_shown_cluster_history()
+
+        self.assertIn(ranked.cluster_key, fresh_state["shown_cluster_history"])
 
     def test_story_deduplication_ignores_tracking_queries(self) -> None:
         first = self.news_story(

@@ -1,6 +1,6 @@
 # Skim
 
-Skim is a personal Streamlit news app built around grounded AI summaries, clean headlines, sharing, archiving, and lightweight customization.
+Skim is a personal Streamlit news app built around grounded AI summaries, clean headlines, sharing, and lightweight customization.
 
 ## Run locally
 
@@ -23,7 +23,7 @@ Skim can discover feeds without an AI key, but publishing cards requires an AI p
   relevance ranking to surface additional candidates.
 - Aggregator and social items no longer receive artificial reference bonuses. Cards show the real number of distinct outlets and reports in each event cluster.
 - The starting feed does not call AI. Publisher-page extraction and the AI brief happen only when you expand a headline.
-- Stories do not repeat for 24 hours. Repeated reruns of the same batch reuse cached extraction and AI results.
+- Stories do not repeat for 24 hours, including after a fresh Streamlit session. Repeated reruns reuse cached discovery, extraction, and AI results.
 - **Refresh latest stories** repolls every discovery source on demand. **Load 20 more** advances to the next unseen headline list from the current discovery pool.
 
 Create an OpenAI API key, then set it before starting Streamlit locally:
@@ -63,9 +63,9 @@ model prices to show:
 - A persistent estimated all-time feed cost, starting with the first batch generated after the counter is enabled.
 - The estimated cost of each published card and the likely cost of optional Deep analysis.
 
-The cumulative counter is stored in the app URL alongside persistent keywords, so browser
-refreshes and ordinary Streamlit reruns do not erase it or count the same batch twice. It
-is an app-side estimate, not a replacement for the OpenAI billing dashboard.
+The cumulative counter and keyword boosters use app-side ledgers with browser and URL backups,
+so browser refreshes and ordinary Streamlit reruns do not erase them. The cost figure is an
+app-side estimate, not a replacement for the OpenAI billing dashboard.
 
 ## Tokens
 
@@ -89,11 +89,24 @@ The news discovery sources and article extractor are token-free. An AI key is re
 - CBC News RSS
 - ABC Australia RSS
 - RNZ RSS
+- NBC News RSS
+- UN News RSS
+- RFI English RSS
+- Africanews RSS
+- The Japan Times RSS
+- The Hindu World RSS
+- Times of India RSS
+- Arab News RSS
+- Buenos Aires Times RSS
+- Yonhap News RSS
+- Channel News Asia RSS
+- The Times of Israel RSS
 - ProPublica RSS
 - Politico RSS
 - TechCrunch RSS
 - The Verge RSS
 - ESPN RSS
+- BBC Sport RSS
 - MarketWatch RSS
 - Variety RSS
 - NASA RSS
@@ -113,9 +126,11 @@ public rate limit and includes the required GDELT attribution. It is off by defa
 Customize so a busy public API never delays the core briefing.
 
 The main ranking favors independent-outlet confirmation, coverage velocity, freshness,
-major-newsroom authority, and concrete breaking-news signals. Specialist feeds must gain
-independent confirmation before they enter the high-signal list. Feed retrieval runs in
-parallel so the larger source pool does not create a serial refresh delay.
+major-newsroom authority, and concrete breaking-news signals. It reserves category coverage,
+normally limits a publisher to two headlines, and switches to another reporting outlet within
+the same cluster before relaxing that limit. Specialist feeds must gain independent confirmation
+before they enter the high-signal list. Feed retrieval and fallback searches run in parallel,
+while the clustered discovery result is cached across Streamlit interactions.
 
 ## GitHub setup
 

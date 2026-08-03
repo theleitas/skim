@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Iterable, Sequence
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -30,6 +30,7 @@ BATCH_SIZE = 20
 ITEMS_PER_SOURCE = 50
 MAX_FEED_WORKERS = 8
 FEED_TIMEOUT_SECONDS = 15
+MAX_FEED_BYTES = 5_000_000
 ARTICLE_TIMEOUT_SECONDS = 15
 ARTICLE_MAX_BYTES = 3_000_000
 ARTICLE_MAX_WORDS = 3_000
@@ -40,9 +41,9 @@ MIN_FEED_EVIDENCE_SENTENCES = 2
 MAX_ARTICLE_CANDIDATES = 12
 MAX_BRIEFING_SEARCH_RESULTS = 8
 MAX_BRIEFING_SEARCH_CANDIDATES = 12
-MAX_BASE_CANDIDATES = 40
-MAX_KEYWORD_CANDIDATES = 10
 MAX_HEADLINES_PER_OUTLET = 2
+DISCOVERY_CACHE_SECONDS = 300
+ARTICLE_CACHE_SECONDS = 21_600
 MIN_SUMMARY_WORDS = 18
 MIN_NEW_SUMMARY_TERMS = 7
 NO_REPEAT_HOURS = 24
@@ -92,6 +93,13 @@ KEYWORD_QUERY_UPDATED = "kwUpdated"
 KEYWORD_LEDGER_PATH = Path(__file__).with_name(".skim_keywords.json")
 KEYWORD_BROWSER_STORAGE_KEY = "skim-keyword-boosters-v1"
 KEYWORD_LEDGER_LOCK = threading.Lock()
+SHOWN_HISTORY_LEDGER_PATH = Path(
+    os.environ.get(
+        "SKIM_SHOWN_HISTORY_PATH",
+        str(Path(__file__).with_name(".skim_shown_history.json")),
+    )
+)
+SHOWN_HISTORY_LEDGER_LOCK = threading.Lock()
 ADMIN_PASSWORD = "0102"
 EASTERN_STANDARD_TIME = timezone(timedelta(hours=-5), "EST")
 REQUEST_HEADERS = {
@@ -416,6 +424,20 @@ STOPWORDS = {
     "said", "says", "she", "that", "the", "their", "this", "to", "was", "were",
     "with", "you", "after", "about", "over", "into", "latest", "live", "updates",
     "how", "why", "what", "when", "where", "who", "more", "than",
+}
+
+HEADLINE_CLUSTER_STOPWORDS = {
+    "announc",
+    "announcement",
+    "breaking",
+    "government",
+    "major",
+    "news",
+    "official",
+    "officials",
+    "report",
+    "reports",
+    "update",
 }
 
 MAJOR_OUTLET_MARKERS = (
@@ -1846,26 +1868,37 @@ def clean_text(value: str | None) -> str:
     return text
 
 
+def plausible_published_date(value: datetime) -> datetime | None:
+    published = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    published = published.astimezone(timezone.utc)
+    if published > datetime.now(timezone.utc) + timedelta(hours=24):
+        return None
+    return value
+
+
 def parse_date(value: str | None) -> datetime | None:
     if not value:
         return None
     if re.fullmatch(r"\d{8}T\d{6}Z", value):
         try:
-            return datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            parsed = datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc
+            )
+            return plausible_published_date(parsed)
         except ValueError:
             return None
     try:
         parsed = parsedate_to_datetime(value)
         if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
-        return parsed
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return plausible_published_date(parsed)
     except (TypeError, ValueError, IndexError):
         try:
             iso_value = value.replace("Z", "+00:00")
             parsed = datetime.fromisoformat(iso_value)
             if parsed.tzinfo is None:
-                return parsed.replace(tzinfo=timezone.utc)
-            return parsed
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return plausible_published_date(parsed)
         except ValueError:
             return None
 
@@ -2013,7 +2046,9 @@ def child_image(parent: ET.Element, summary_html: str) -> str | None:
 
 def stable_id(source_name: str, title: str, link: str) -> str:
     raw = f"{source_name}|{title}|{link}".lower()
-    return re.sub(r"[^a-z0-9]+", "-", raw).strip("-")[:96]
+    slug = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return f"{slug[:80].rstrip('-')}-{digest}"
 
 
 def source_name_from_domain(domain: str) -> str:
@@ -2105,7 +2140,11 @@ def story_tokens(story: Story) -> set[str]:
 
 
 def headline_tokens(story: Story) -> set[str]:
-    return set(significant_words(clean_headline_source(story.title)))
+    return {
+        token
+        for token in significant_words(clean_headline_source(story.title))
+        if token not in HEADLINE_CLUSTER_STOPWORDS
+    }
 
 
 def cluster_key_from_tokens(tokens: set[str], fallback: str) -> str:
@@ -2254,7 +2293,13 @@ def fetch_source(source: NewsSource) -> tuple[list[Story], str | None]:
     request = urllib.request.Request(source.url, headers=REQUEST_HEADERS)
     try:
         with urllib.request.urlopen(request, timeout=FEED_TIMEOUT_SECONDS) as response:
-            xml_bytes = decompress_feed_payload(response.read())
+            payload = response.read(MAX_FEED_BYTES + 1)
+            if len(payload) > MAX_FEED_BYTES:
+                return [], (
+                    f"{source.name}: feed exceeded the "
+                    f"{MAX_FEED_BYTES // 1_000_000} MB limit"
+                )
+            xml_bytes = decompress_feed_payload(payload)
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
         return [], f"{source.name}: {exc}"
     except OSError as exc:
@@ -2397,85 +2442,107 @@ def briefing_search_phrases(title: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(phrases))
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+def fetch_google_news_search_phrase(
+    target_title: str,
+    search_phrase: str,
+    topics: tuple[str, ...],
+) -> list[Story]:
+    candidates: list[Story] = []
+    query = urllib.parse.urlencode(
+        {
+            "q": search_phrase,
+            "hl": "en-US",
+            "gl": "US",
+            "ceid": "US:en",
+        }
+    )
+    request = urllib.request.Request(
+        f"https://news.google.com/rss/search?{query}",
+        headers=REQUEST_HEADERS,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=FEED_TIMEOUT_SECONDS) as response:
+            root = ET.fromstring(response.read(MAX_FEED_BYTES))
+    except (
+        ET.ParseError,
+        urllib.error.URLError,
+        TimeoutError,
+        ValueError,
+        OSError,
+    ):
+        return []
+
+    entries = [node for node in root.iter() if local_name(node.tag) in {"item", "entry"}]
+    for entry in entries[:MAX_BRIEFING_SEARCH_RESULTS]:
+        published = parse_date(
+            child_text(entry, ("pubDate", "published", "updated", "date"))
+        )
+        summary_html = child_raw_text(
+            entry,
+            ("description", "summary", "content", "encoded"),
+        )
+        nested_links = google_news_cluster_links(summary_html)
+        if nested_links:
+            entry_candidates = nested_links
+        else:
+            entry_candidates = (
+                (
+                    child_text(entry, ("title",)),
+                    child_link(entry),
+                    child_text(entry, ("source",)),
+                ),
+            )
+
+        for candidate_title, candidate_link, publisher in entry_candidates:
+            if not candidate_title or not candidate_link:
+                continue
+            if not briefing_candidate_is_relevant(target_title, candidate_title):
+                continue
+            source_name = google_news_publisher_name(publisher)
+            if outlet_identity(source_name) in {
+                "facebook",
+                "instagram",
+                "tiktok",
+                "x",
+                "youtube",
+            }:
+                continue
+            candidates.append(
+                Story(
+                    id=stable_id(source_name, candidate_title, candidate_link),
+                    source=source_name,
+                    group="Aggregator",
+                    title=candidate_title,
+                    link=candidate_link,
+                    summary_text="",
+                    published=published,
+                    topics=topics,
+                )
+            )
+    return candidates
+
+
+@st.cache_data(ttl=ARTICLE_CACHE_SECONDS, show_spinner=False)
 def fetch_google_news_briefing_candidates(
     title: str,
     topics: tuple[str, ...],
 ) -> tuple[Story, ...]:
     clean_title = clean_headline_source(title)
+    search_phrases = briefing_search_phrases(clean_title)
     candidates: list[Story] = []
-    for search_phrase in briefing_search_phrases(clean_title):
-        query = urllib.parse.urlencode(
-            {
-                "q": search_phrase,
-                "hl": "en-US",
-                "gl": "US",
-                "ceid": "US:en",
-            }
-        )
-        request = urllib.request.Request(
-            f"https://news.google.com/rss/search?{query}",
-            headers=REQUEST_HEADERS,
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=FEED_TIMEOUT_SECONDS) as response:
-                root = ET.fromstring(response.read())
-        except (
-            ET.ParseError,
-            urllib.error.URLError,
-            TimeoutError,
-            ValueError,
-            OSError,
-        ):
-            continue
-
-        entries = [node for node in root.iter() if local_name(node.tag) in {"item", "entry"}]
-        for entry in entries[:MAX_BRIEFING_SEARCH_RESULTS]:
-            published = parse_date(
-                child_text(entry, ("pubDate", "published", "updated", "date"))
+    worker_count = min(3, len(search_phrases))
+    if worker_count:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            results = executor.map(
+                lambda phrase: fetch_google_news_search_phrase(
+                    clean_title,
+                    phrase,
+                    topics,
+                ),
+                search_phrases,
             )
-            summary_html = child_raw_text(
-                entry,
-                ("description", "summary", "content", "encoded"),
-            )
-            nested_links = google_news_cluster_links(summary_html)
-            if nested_links:
-                entry_candidates = nested_links
-            else:
-                entry_candidates = (
-                    (
-                        child_text(entry, ("title",)),
-                        child_link(entry),
-                        child_text(entry, ("source",)),
-                    ),
-                )
-
-            for candidate_title, candidate_link, publisher in entry_candidates:
-                if not candidate_title or not candidate_link:
-                    continue
-                if not briefing_candidate_is_relevant(clean_title, candidate_title):
-                    continue
-                source_name = google_news_publisher_name(publisher)
-                if outlet_identity(source_name) in {
-                    "facebook",
-                    "instagram",
-                    "tiktok",
-                    "x",
-                    "youtube",
-                }:
-                    continue
-                candidates.append(
-                    Story(
-                        id=stable_id(source_name, candidate_title, candidate_link),
-                        source=source_name,
-                        group="Aggregator",
-                        title=candidate_title,
-                        link=candidate_link,
-                        summary_text="",
-                        published=published,
-                        topics=topics,
-                    )
-                )
+            for result in results:
+                candidates.extend(result)
 
     candidates = deduplicate_stories(candidates)
     candidates.sort(
@@ -2549,15 +2616,43 @@ def fetch_keyword_rankings(custom_keywords: tuple[str, ...]) -> tuple[dict[str, 
     return keyword_rankings, errors
 
 
+@st.cache_data(ttl=DISCOVERY_CACHE_SECONDS, show_spinner=False)
+def discover_ranked_news(
+    selected_topics: tuple[str, ...],
+    include_aggregators: bool,
+    include_social: bool,
+    custom_keywords: tuple[str, ...],
+    include_gdelt: bool,
+) -> tuple[list[RankedStory], dict[str, list[RankedStory]], list[str]]:
+    stories, errors = fetch_stories(
+        selected_topics,
+        include_aggregators,
+        include_social,
+        custom_keywords,
+        include_gdelt,
+    )
+    ranked_stories = rank_stories(stories, custom_keywords)
+    keyword_rankings, keyword_errors = fetch_keyword_rankings(custom_keywords)
+    return ranked_stories, keyword_rankings, [*errors, *keyword_errors]
+
+
 def cluster_stories(stories: list[Story]) -> list[list[Story]]:
     clusters: list[list[Story]] = []
     cluster_headlines: list[list[set[str]]] = []
+    token_cluster_indexes: dict[str, set[int]] = {}
 
     for story in stories:
         tokens = headline_tokens(story)
         matched_index = None
         best_similarity = 0.0
-        for index, existing_headlines in enumerate(cluster_headlines):
+        candidate_hits: Counter[int] = Counter()
+        for token in tokens:
+            candidate_hits.update(token_cluster_indexes.get(token, ()))
+        candidate_indexes = sorted(
+            index for index, shared_count in candidate_hits.items() if shared_count >= 2
+        )
+        for index in candidate_indexes:
+            existing_headlines = cluster_headlines[index]
             similarity = max(
                 headline_event_similarity(tokens, existing_tokens)
                 for existing_tokens in existing_headlines
@@ -2567,11 +2662,16 @@ def cluster_stories(stories: list[Story]) -> list[list[Story]]:
                 best_similarity = similarity
 
         if matched_index is None:
+            cluster_index = len(clusters)
             clusters.append([story])
             cluster_headlines.append([tokens])
+            for token in tokens:
+                token_cluster_indexes.setdefault(token, set()).add(cluster_index)
         else:
             clusters[matched_index].append(story)
             cluster_headlines[matched_index].append(tokens)
+            for token in tokens:
+                token_cluster_indexes.setdefault(token, set()).add(matched_index)
 
     return clusters
 
@@ -3084,6 +3184,7 @@ def set_ai_cost_total(total_dollars: float, reset_history: bool = False) -> None
 
 
 def complete_story_refresh() -> None:
+    discover_ranked_news.clear()
     fetch_source.clear()
     fetch_google_news_briefing_candidates.clear()
     resolve_article_url.clear()
@@ -3210,8 +3311,9 @@ def story_score(
     cluster_size: int,
     keywords: tuple[str, ...] = (),
     coverage_span_hours: float = 0.0,
+    now: datetime | None = None,
 ) -> float:
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
     age_hours = story_age_hours(story, now)
     recency_score = max(0.0, 72.0 - (age_hours * 4.0))
     outlet_score = min(references, 8) * 30.0
@@ -3299,23 +3401,29 @@ def rank_stories(
     require_high_signal: bool = True,
 ) -> list[RankedStory]:
     ranked: list[RankedStory] = []
+    now = datetime.now(timezone.utc)
     for cluster in cluster_stories(stories):
         sources = {outlet_identity(story.source) for story in cluster}
         references = len(sources)
         if require_high_signal and not cluster_is_high_signal(cluster, references):
             continue
         coverage_span_hours = cluster_coverage_span_hours(cluster)
+        story_scores = {
+            story: story_score(
+                story,
+                references=references,
+                cluster_size=len(cluster),
+                keywords=keywords,
+                coverage_span_hours=coverage_span_hours,
+                now=now,
+            )
+            for story in cluster
+        }
         representative = max(
             cluster,
             key=lambda story: (
                 representative_quality(story),
-                story_score(
-                    story,
-                    references=references,
-                    cluster_size=len(cluster),
-                    keywords=keywords,
-                    coverage_span_hours=coverage_span_hours,
-                ),
+                story_scores[story],
             ),
         )
         article_candidates: list[Story] = []
@@ -3324,13 +3432,7 @@ def rank_stories(
             cluster,
             key=lambda story: (
                 article_candidate_quality(story),
-                story_score(
-                    story,
-                    references=references,
-                    cluster_size=len(cluster),
-                    keywords=keywords,
-                    coverage_span_hours=coverage_span_hours,
-                ),
+                story_scores[story],
             ),
             reverse=True,
         ):
@@ -3358,13 +3460,7 @@ def rank_stories(
                 cluster_key=cluster_key_from_stories(cluster, representative),
                 references=references,
                 topic_story_count=len(cluster),
-                score=story_score(
-                    representative,
-                    references=references,
-                    cluster_size=len(cluster),
-                    keywords=keywords,
-                    coverage_span_hours=coverage_span_hours,
-                ),
+                score=story_scores[representative],
                 coverage_span_hours=coverage_span_hours,
                 signal_label=cluster_signal_label(cluster, references, coverage_span_hours),
                 outlets=tuple(outlet_names),
@@ -3592,6 +3688,44 @@ def extract_article_image_url(page_html: str, article_url: str) -> str | None:
     return None
 
 
+def extract_article_page_title(page_html: str) -> str:
+    try:
+        from lxml import html as lxml_html
+    except ImportError:
+        return ""
+
+    try:
+        document = lxml_html.fromstring(page_html)
+    except (ValueError, TypeError):
+        return ""
+
+    for key in ("og:title", "twitter:title"):
+        values = document.xpath(
+            "//meta[translate(@property, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+            "'abcdefghijklmnopqrstuvwxyz')=$key or "
+            "translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+            "'abcdefghijklmnopqrstuvwxyz')=$key]/@content",
+            key=key,
+        )
+        for value in values:
+            title = clean_headline_source(str(value))
+            if title:
+                return title
+
+    title_values = document.xpath("//title/text()")
+    return clean_headline_source(str(title_values[0])) if title_values else ""
+
+
+def article_page_title_is_relevant(expected_title: str, page_title: str) -> bool:
+    if not page_title:
+        return True
+    exact_match, shared_count, smaller_title_coverage = briefing_candidate_relevance(
+        expected_title,
+        page_title,
+    )
+    return bool(exact_match or (shared_count >= 2 and smaller_title_coverage >= 0.3))
+
+
 def extract_html_paragraph_candidates(page_html: str) -> tuple[tuple[str, int], ...]:
     try:
         from lxml import html as lxml_html
@@ -3690,7 +3824,7 @@ def extract_main_article_text(
     )[0]
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=ARTICLE_CACHE_SECONDS, show_spinner=False)
 def resolve_article_url(url: str) -> str:
     if not is_google_news_url(url):
         return url
@@ -3707,7 +3841,7 @@ def resolve_article_url(url: str) -> str:
     return ""
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=ARTICLE_CACHE_SECONDS, show_spinner=False)
 def fetch_article_evidence(url: str, expected_title: str) -> ArticleEvidence | None:
     article_url = resolve_article_url(url)
     if not article_url.startswith(("https://", "http://")):
@@ -3729,6 +3863,9 @@ def fetch_article_evidence(url: str, expected_title: str) -> ArticleEvidence | N
         page_html = page_bytes.decode(charset, errors="ignore")
     except LookupError:
         page_html = page_bytes.decode("utf-8", errors="ignore")
+    page_title = extract_article_page_title(page_html)
+    if not article_page_title_is_relevant(expected_title, page_title):
+        return None
     article_image_url = extract_article_image_url(page_html, final_url)
     try:
         article_text = extract_main_article_text(page_html, final_url, expected_title)
@@ -3775,10 +3912,6 @@ def feed_story_evidence(story: Story) -> ArticleEvidence | None:
     )
 
 
-def story_haystack(story: Story) -> str:
-    return f" {story.title} {story.summary_text} ".lower()
-
-
 def secret_or_env(name: str) -> str:
     try:
         secret_value = st.secrets.get(name, "")
@@ -3789,10 +3922,6 @@ def secret_or_env(name: str) -> str:
 
 def openai_api_key() -> str:
     return secret_or_env("OPENAI_API_KEY")
-
-
-def openai_is_configured() -> bool:
-    return bool(openai_api_key())
 
 
 def configured_ai_provider() -> str:
@@ -3899,36 +4028,6 @@ def card_ai_cost(card: object) -> float:
         return max(0.0, float(card.get("__ai_cost", 0)))
     except (TypeError, ValueError):
         return 0.0
-
-
-def openai_cost_note(story: Story, article_text: str, card: dict[str, str]) -> str:
-    if configured_ai_provider() != "openai":
-        return ""
-
-    summary_model = ai_model("openai", deep=False)
-    summary_cost = card_ai_cost(card)
-    if summary_cost <= 0:
-        summary_input_tokens = estimated_token_count(
-            story.title,
-            story.summary_text,
-            article_text,
-            overhead_tokens=850,
-        )
-        summary_cost = openai_cost(summary_model, summary_input_tokens, 1_500)
-    if summary_cost is None:
-        return ""
-
-    deep_model = ai_model("openai", deep=True)
-    deep_input_tokens = estimated_token_count(
-        story.title,
-        story.summary_text,
-        article_text,
-        overhead_tokens=520,
-    )
-    deep_output_tokens = 1_500
-    deep_cost = openai_cost(deep_model, deep_input_tokens, deep_output_tokens)
-    deep_note = f" · deep if clicked ~{format_cost(deep_cost)}" if deep_cost is not None else ""
-    return f"AI cost: this card ~{format_cost(summary_cost)}{deep_note}"
 
 
 def parse_openai_json(raw_text: str) -> dict:
@@ -4039,6 +4138,13 @@ def chat_completions_json(
     return parse_openai_json(raw_text)
 
 
+@st.cache_resource(show_spinner=False)
+def cached_openai_client(api_key: str) -> object:
+    from openai import OpenAI
+
+    return OpenAI(api_key=api_key, timeout=75.0, max_retries=2)
+
+
 def openai_json(
     model: str,
     instructions: str,
@@ -4048,9 +4154,7 @@ def openai_json(
     schema_name: str,
     schema: dict,
 ) -> dict:
-    from openai import OpenAI
-
-    client = OpenAI(api_key=openai_api_key())
+    client = cached_openai_client(openai_api_key())
     response = client.responses.create(
         model=model,
         instructions=instructions,
@@ -5329,17 +5433,6 @@ def render_story_details(prepared_story: PreparedStory) -> None:
             )
 
 
-def render_story(prepared_story: PreparedStory) -> None:
-    with st.container(border=True):
-        display_headline = str(prepared_story.card.get("__headline", ""))
-        render_story_header(
-            prepared_story.ranked_story,
-            display_headline,
-            prepared_story=prepared_story,
-        )
-        render_story_details(prepared_story)
-
-
 def render_headline_story(
     ranked_story: RankedStory,
     detail: int,
@@ -5592,6 +5685,61 @@ def parse_iso_datetime(value: str) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def normalize_shown_cluster_history(raw: object) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    valid_entries: list[tuple[str, str, datetime]] = []
+    for cluster_key, timestamp in raw.items():
+        key = clean_text(str(cluster_key))
+        parsed = parse_iso_datetime(str(timestamp))
+        if key and parsed:
+            valid_entries.append((key, parsed.isoformat(), parsed))
+    valid_entries.sort(key=lambda entry: entry[2])
+    return {
+        cluster_key: timestamp
+        for cluster_key, timestamp, _ in valid_entries[-500:]
+    }
+
+
+def read_shown_cluster_history() -> dict[str, str]:
+    try:
+        with SHOWN_HISTORY_LEDGER_LOCK:
+            raw = json.loads(SHOWN_HISTORY_LEDGER_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return normalize_shown_cluster_history(raw)
+
+
+def write_shown_cluster_history(history: object) -> None:
+    temporary_path = SHOWN_HISTORY_LEDGER_PATH.with_suffix(".tmp")
+    try:
+        with SHOWN_HISTORY_LEDGER_LOCK:
+            temporary_path.write_text(
+                json.dumps(
+                    normalize_shown_cluster_history(history),
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+            os.replace(temporary_path, SHOWN_HISTORY_LEDGER_PATH)
+    except OSError:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def initialize_shown_cluster_history() -> None:
+    if "shown_cluster_history" in st.session_state:
+        return
+    history = read_shown_cluster_history()
+    now = utc_now().isoformat()
+    for cluster_key in st.session_state.get("seen_cluster_keys", set()):
+        history.setdefault(str(cluster_key), now)
+    st.session_state.shown_cluster_history = history
+    prune_shown_cluster_history()
+
+
 def prune_shown_cluster_history() -> None:
     history = dict(st.session_state.get("shown_cluster_history", {}))
     cutoff = utc_now() - timedelta(hours=NO_REPEAT_HOURS)
@@ -5601,6 +5749,8 @@ def prune_shown_cluster_history() -> None:
         if (parsed := parse_iso_datetime(str(timestamp))) and parsed >= cutoff
     }
     st.session_state.shown_cluster_history = pruned
+    if pruned != history:
+        write_shown_cluster_history(pruned)
 
 
 def mark_batch_shown(batch: Sequence[RankedStory], refresh_key: str) -> None:
@@ -5613,6 +5763,7 @@ def mark_batch_shown(batch: Sequence[RankedStory], refresh_key: str) -> None:
     st.session_state.shown_cluster_history = history
     st.session_state.batch_refreshed_at = now
     st.session_state.batch_refresh_id = refresh_key
+    write_shown_cluster_history(history)
 
 
 def ai_cost_event_token(event_id: str) -> str:
@@ -5852,81 +6003,6 @@ def prepare_ranked_story(
         if prepared:
             return prepared, total_ai_cost
     return None, total_ai_cost
-
-
-def append_prepared_story(
-    batch: list[PreparedStory],
-    prepared: PreparedStory,
-    on_story: Callable[[PreparedStory, int], None] | None,
-) -> None:
-    batch.append(prepared)
-    if on_story:
-        on_story(prepared, len(batch))
-
-
-def build_publishable_batch(
-    ranked_stories: list[RankedStory],
-    keyword_rankings: dict[str, list[RankedStory]],
-    detail: int,
-    on_story: Callable[[PreparedStory, int], None] | None = None,
-) -> list[PreparedStory]:
-    if not configured_ai_provider():
-        return []
-
-    prune_shown_cluster_history()
-    shown_cluster_keys = set(st.session_state.shown_cluster_history)
-    current = current_batch_from_keys(ranked_stories, keyword_rankings)
-    if current:
-        refresh_key = str(st.session_state.get("batch_refresh_id", "")) or utc_now().isoformat()
-        restored: list[PreparedStory] = []
-        restored_ai_cost = 0.0
-        for item in current:
-            prepared, attempt_cost = prepare_ranked_story(item, detail, refresh_key)
-            restored_ai_cost += attempt_cost
-            if prepared:
-                restored.append(prepared)
-        if len(restored) == len(current):
-            record_batch_ai_cost(restored, refresh_key, restored_ai_cost)
-            if on_story:
-                for index, prepared in enumerate(restored, start=1):
-                    on_story(prepared, index)
-            return restored
-        st.session_state.current_cluster_keys = []
-        st.session_state.current_representative_ids = {}
-
-    refresh_key = utc_now().isoformat()
-    batch: list[PreparedStory] = []
-    used_cluster_keys: set[str] = set()
-    attempted_ai_cost = 0.0
-
-    for item in ranked_stories[:MAX_BASE_CANDIDATES]:
-        if len(batch) >= BATCH_SIZE:
-            break
-        if ranked_item_is_available(item, shown_cluster_keys | used_cluster_keys):
-            prepared, attempt_cost = prepare_ranked_story(item, detail, refresh_key)
-            attempted_ai_cost += attempt_cost
-            if prepared:
-                append_prepared_story(batch, prepared, on_story)
-                used_cluster_keys.add(item.cluster_key)
-
-    for keyword in keyword_rankings:
-        for item in keyword_rankings[keyword][:MAX_KEYWORD_CANDIDATES]:
-            if ranked_item_is_available(item, shown_cluster_keys | used_cluster_keys):
-                prepared, attempt_cost = prepare_ranked_story(item, detail, refresh_key)
-                attempted_ai_cost += attempt_cost
-                if prepared:
-                    append_prepared_story(batch, prepared, on_story)
-                    used_cluster_keys.add(item.cluster_key)
-                    break
-
-    ranked_batch = [prepared.ranked_story for prepared in batch]
-    st.session_state.current_cluster_keys = [item.cluster_key for item in ranked_batch]
-    st.session_state.current_representative_ids = {
-        item.cluster_key: item.story.id for item in ranked_batch
-    }
-    mark_batch_shown(ranked_batch, refresh_key)
-    record_batch_ai_cost(batch, refresh_key, attempted_ai_cost)
-    return batch
 
 
 def append_keyword_headlines(
@@ -6190,6 +6266,7 @@ def render_admin(errors: Sequence[str], batch_size: int) -> None:
             )
             if st.button("Clear 24-hour history", use_container_width=True):
                 st.session_state.shown_cluster_history = {}
+                write_shown_cluster_history({})
                 st.session_state.current_cluster_keys = []
                 st.session_state.current_representative_ids = {}
                 st.rerun()
@@ -6279,10 +6356,7 @@ def main() -> None:
         st.session_state.expanded_story_ids = set()
     if "generation_issues" not in st.session_state:
         st.session_state.generation_issues = []
-    if "shown_cluster_history" not in st.session_state:
-        legacy_seen = st.session_state.get("seen_cluster_keys", set())
-        now = utc_now().isoformat()
-        st.session_state.shown_cluster_history = {cluster_key: now for cluster_key in legacy_seen}
+    initialize_shown_cluster_history()
     if "batch_refresh_id" not in st.session_state:
         st.session_state.batch_refresh_id = ""
     if "batch_refreshed_at" not in st.session_state:
@@ -6333,16 +6407,13 @@ def main() -> None:
         st.session_state.last_settings = current_settings
 
     with st.spinner("Building a stronger story list..."):
-        stories, errors = fetch_stories(
+        ranked_stories, keyword_rankings, errors = discover_ranked_news(
             tuple(selected_topics),
             include_aggregators,
             include_social,
             keywords,
             include_gdelt,
         )
-        ranked_stories = rank_stories(stories, keywords)
-        keyword_rankings, keyword_errors = fetch_keyword_rankings(keywords)
-        errors.extend(keyword_errors)
 
     batch = build_headline_batch(ranked_stories, keyword_rankings)
     pinned_story_id = st.session_state.pinned_story_id
