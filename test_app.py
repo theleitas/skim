@@ -908,6 +908,31 @@ class ArticlePipelineTests(unittest.TestCase):
         self.assertEqual(current[0].story.id, alternate.id)
         self.assertEqual(current[0].story.source, "BBC News")
 
+    def test_current_batch_preserves_the_material_update_label(self) -> None:
+        story = self.news_story(
+            "ceasefire-update",
+            "Leaders sign ceasefire agreement after overnight talks",
+            "Associated Press",
+        )
+        ranked = app.RankedStory(
+            story=story,
+            cluster_key="ceasefire-update-cluster",
+            references=5,
+            topic_story_count=8,
+            score=150,
+        )
+        state = SimpleNamespace(
+            current_cluster_keys=[ranked.cluster_key],
+            current_representative_ids={ranked.cluster_key: story.id},
+            current_update_cluster_keys={ranked.cluster_key},
+        )
+
+        with patch.object(app.st, "session_state", state):
+            current = app.current_batch_from_keys([ranked], {})
+
+        self.assertEqual(current[0].signal_label, "Update")
+        self.assertTrue(current[0].is_material_update)
+
     def test_batch_timestamp_is_displayed_in_est(self) -> None:
         with patch.object(
             app.st,
@@ -1621,6 +1646,168 @@ class ArticlePipelineTests(unittest.TestCase):
                 app.initialize_shown_cluster_history()
 
         self.assertIn(ranked.cluster_key, fresh_state["shown_cluster_history"])
+        restored_record = fresh_state["shown_cluster_history"][ranked.cluster_key]
+        self.assertEqual(restored_record["cluster_key"], ranked.cluster_key)
+        self.assertIn(app.normalized_story_url(story.link), restored_record["urls"])
+
+    def test_no_repeat_policy_blocks_the_same_article_url_for_24_hours(self) -> None:
+        previous_story = self.news_story(
+            "aid-bill-original",
+            "Senate debates emergency aid bill before final vote",
+            "BBC News",
+            hours_ago=3,
+        )
+        previous = app.RankedStory(
+            story=previous_story,
+            cluster_key="senate-aid-bill",
+            references=4,
+            topic_story_count=5,
+            score=100,
+            article_candidates=(previous_story,),
+        )
+        history = {
+            previous.cluster_key: app.ranked_story_history_payload(
+                previous,
+                datetime.now(timezone.utc) - timedelta(hours=2),
+            )
+        }
+        rewritten = replace(
+            previous_story,
+            id="aid-bill-rewritten",
+            title="Senate passes emergency aid bill after final vote",
+            published=datetime.now(timezone.utc) - timedelta(minutes=10),
+        )
+        current = replace(
+            previous,
+            story=rewritten,
+            article_candidates=(rewritten,),
+        )
+
+        result = app.apply_no_repeat_policy(
+            current,
+            app.shown_history_records(history),
+        )
+
+        self.assertIsNone(result)
+
+    def test_no_repeat_policy_blocks_a_reworded_story_without_a_new_event(self) -> None:
+        previous_story = self.news_story(
+            "wildfire-original",
+            "Wildfire grows near Spokane as crews battle flames",
+            "CBS News",
+            hours_ago=3,
+        )
+        previous = app.RankedStory(
+            story=previous_story,
+            cluster_key="spokane-wildfire",
+            references=5,
+            topic_story_count=7,
+            score=100,
+            article_candidates=(previous_story,),
+        )
+        history = {
+            previous.cluster_key: app.ranked_story_history_payload(
+                previous,
+                datetime.now(timezone.utc) - timedelta(hours=2),
+            )
+        }
+        rewrite = self.news_story(
+            "wildfire-rewrite",
+            "Crews continue battling growing wildfire near Spokane",
+            "NBC News",
+            hours_ago=0.25,
+        )
+        current = replace(
+            previous,
+            story=rewrite,
+            article_candidates=(rewrite,),
+        )
+
+        result = app.apply_no_repeat_policy(
+            current,
+            app.shown_history_records(history),
+        )
+
+        self.assertIsNone(result)
+
+    def test_material_update_returns_with_the_new_article_and_update_label(self) -> None:
+        previous_story = self.news_story(
+            "aid-talks",
+            "Senate debates emergency aid bill before final vote",
+            "BBC News",
+            hours_ago=4,
+        )
+        previous = app.RankedStory(
+            story=previous_story,
+            cluster_key="senate-aid-bill",
+            references=4,
+            topic_story_count=5,
+            score=100,
+            article_candidates=(previous_story,),
+        )
+        history = {
+            previous.cluster_key: app.ranked_story_history_payload(
+                previous,
+                datetime.now(timezone.utc) - timedelta(hours=3),
+            )
+        }
+        passed_story = self.news_story(
+            "aid-passed",
+            "Senate passes emergency aid bill in 51-49 vote",
+            "Associated Press",
+            hours_ago=0.25,
+        )
+        current = replace(
+            previous,
+            cluster_key="senate-aid-bill-passed",
+            article_candidates=(previous_story, passed_story),
+            score=180,
+        )
+
+        result = app.apply_no_repeat_policy(
+            current,
+            app.shown_history_records(history),
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.story.id, passed_story.id)
+        self.assertEqual(result.signal_label, "Update")
+        self.assertTrue(result.is_material_update)
+
+    def test_expired_no_repeat_record_no_longer_blocks_the_story(self) -> None:
+        story = self.news_story(
+            "expired-story",
+            "Court rules on disputed national election result",
+            "Reuters",
+        )
+        ranked = app.RankedStory(
+            story=story,
+            cluster_key="election-ruling",
+            references=3,
+            topic_story_count=3,
+            score=100,
+        )
+        old_timestamp = datetime.now(timezone.utc) - timedelta(
+            hours=app.NO_REPEAT_HOURS + 1
+        )
+        state = SessionStateDict(
+            shown_cluster_history={
+                ranked.cluster_key: app.ranked_story_history_payload(
+                    ranked,
+                    old_timestamp,
+                )
+            }
+        )
+        with TemporaryDirectory() as temporary_directory:
+            ledger_path = Path(temporary_directory) / ".skim_shown_history.json"
+            with (
+                patch.object(app.st, "session_state", state),
+                patch.object(app, "SHOWN_HISTORY_LEDGER_PATH", ledger_path),
+            ):
+                app.prune_shown_cluster_history()
+
+        self.assertEqual(state["shown_cluster_history"], {})
 
     def test_story_deduplication_ignores_tracking_queries(self) -> None:
         first = self.news_story(

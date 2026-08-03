@@ -47,6 +47,7 @@ ARTICLE_CACHE_SECONDS = 21_600
 MIN_SUMMARY_WORDS = 18
 MIN_NEW_SUMMARY_TERMS = 7
 NO_REPEAT_HOURS = 24
+MAX_SHOWN_HISTORY_ENTRIES = 500
 POPULAR_COVERAGE_HOURS = 24
 FAST_COVERAGE_HOURS = 8
 MAJOR_BREAKING_HOURS = 12
@@ -146,6 +147,27 @@ class RankedStory:
     signal_label: str = ""
     outlets: tuple[str, ...] = ()
     article_candidates: tuple[Story, ...] = ()
+    is_material_update: bool = False
+
+
+@dataclass(frozen=True)
+class ShownHistoryRecord:
+    key: str
+    shown_at: datetime
+    cluster_key: str
+    urls: frozenset[str] = frozenset()
+    headlines: tuple[str, ...] = ()
+    markers: frozenset[str] = frozenset()
+    latest_published: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ShownHistoryIndex:
+    records: tuple[ShownHistoryRecord, ...]
+    cluster_indexes: dict[str, frozenset[int]]
+    url_indexes: dict[str, frozenset[int]]
+    headline_indexes: dict[str, frozenset[int]]
+    token_indexes: dict[str, frozenset[int]]
 
 
 @dataclass(frozen=True)
@@ -546,6 +568,61 @@ BREAKING_NEWS_TERMS = {
     "truce",
     "war",
     "wildfire",
+}
+
+MATERIAL_UPDATE_PATTERNS = {
+    "agreement": r"\b(?:agree[ds]?|agreement|deal|peace accord|settlement)\b",
+    "ceasefire": r"\b(?:ceasefire|truce)\b",
+    "talks-ended": r"\b(?:talks?|negotiations?)\s+(?:collapse[ds]?|end(?:ed)?|fail(?:ed)?)\b",
+    "approved": r"\b(?:approve[ds]?|adopt(?:ed|s)?|pass(?:ed|es)?|ratif(?:y|ied|ies)|sign(?:ed|s)\s+into\s+law)\b",
+    "rejected": r"\b(?:block(?:ed|s)?|defeat(?:ed|s)?|fail(?:ed|s)?|reject(?:ed|s)?|veto(?:ed|es)?)\b",
+    "ruling": r"\b(?:court|judge|tribunal)\s+(?:blocks?|orders?|rules?|strikes?\s+down|upholds?)\b",
+    "verdict": r"\b(?:acquit(?:ted|s)?|convict(?:ed|s)?|guilty|not\s+guilty|verdict)\b",
+    "charged": r"\b(?:charge[ds]?|indict(?:ed|s)?|prosecut(?:ed|es))\b",
+    "arrested": r"\b(?:arrest(?:ed|s)?|detain(?:ed|s)?|taken\s+into\s+custody)\b",
+    "sentenced": r"\b(?:sentence[ds]?|sentencing)\b",
+    "resigned": r"\b(?:quit(?:s)?|resign(?:ed|s|ation)?)\b",
+    "appointed": r"\b(?:appoint(?:ed|s)?|name[ds]?\s+[^,;:]{0,30}\s+as)\b",
+    "elected": r"\b(?:elect(?:ed|s)?|wins?\s+(?:the\s+)?election|declared\s+(?:the\s+)?winner)\b",
+    "removed": r"\b(?:dismiss(?:ed|es)?|fire[ds]?|oust(?:ed|s)?|remove[ds]?)\b",
+    "died": r"\b(?:dead|death|dies|died)\b",
+    "casualties": r"\b(?:casualt(?:y|ies)|injur(?:ed|ies)|killed|missing|wound(?:ed|s)?)\b",
+    "evacuation": r"\b(?:evacuat(?:e|ed|es|ion|ions)|shelter\s+in\s+place)\b",
+    "emergency": r"\b(?:declares?|declared)\s+(?:an?\s+)?(?:state\s+of\s+)?emergency\b",
+    "attack": r"\b(?:airstrike|attack(?:ed|s)?|bomb(?:ed|ing|s)?|drone\s+strike|missile\s+strike|shooting)\b",
+    "invasion": r"\b(?:invade[ds]?|invasion|troops?\s+enter)\b",
+    "sanctions": r"\b(?:impose[ds]?|announce[ds]?)\s+(?:new\s+)?sanctions?\b",
+    "tariffs": r"\b(?:impose[ds]?|raise[ds]?|cut(?:s)?)\s+(?:new\s+)?tariffs?\b",
+    "bankruptcy": r"\b(?:bankrupt(?:cy)?|files?\s+for\s+(?:chapter\s+\d+\s+)?bankruptcy)\b",
+    "acquisition": r"\b(?:acquire[ds]?|acquisition|buyout|merger|merge[ds]?)\b",
+    "cancelled": r"\b(?:cancel(?:led|ed|s|lation)?|postpone[ds]?|suspend(?:ed|s)?)\b",
+    "launched": r"\b(?:launch(?:ed|es)?|release[ds]?|rolls?\s+out)\b",
+    "champion": r"\b(?:champion(?:s|ship)?|clinche[ds]?|wins?\s+(?:the\s+)?(?:final|title|tournament))\b",
+}
+
+MATERIAL_QUANTITY_CONTEXT = {
+    "arrested",
+    "billion",
+    "casualties",
+    "charged",
+    "dead",
+    "death",
+    "deaths",
+    "dollars",
+    "evacuated",
+    "injured",
+    "killed",
+    "magnitude",
+    "million",
+    "missing",
+    "percent",
+    "points",
+    "seats",
+    "trillion",
+    "toll",
+    "vote",
+    "votes",
+    "wounded",
 }
 
 CATEGORY_COLORS = {
@@ -2147,6 +2224,43 @@ def headline_tokens(story: Story) -> set[str]:
     }
 
 
+def material_update_markers(title: str) -> set[str]:
+    normalized = clean_headline_source(title).lower()
+    markers = {
+        label
+        for label, pattern in MATERIAL_UPDATE_PATTERNS.items()
+        if re.search(pattern, normalized)
+    }
+    tokens = re.findall(r"\$?\d[\d,.]*%?|[a-z]+", normalized)
+    for index, token in enumerate(tokens):
+        if not any(character.isdigit() for character in token):
+            continue
+        nearby = tokens[max(0, index - 3) : index] + tokens[index + 1 : index + 4]
+        contexts = MATERIAL_QUANTITY_CONTEXT.intersection(nearby)
+        if token.endswith("%"):
+            contexts.add("percent")
+        if token.startswith("$"):
+            contexts.add("dollars")
+        for context in contexts:
+            markers.add(f"quantity:{context}:{token.strip('$').rstrip('%')}")
+    return markers
+
+
+def headlines_are_near_duplicates(left: str, right: str) -> bool:
+    left_normalized = normalized_story_text(left)
+    right_normalized = normalized_story_text(right)
+    if not left_normalized or not right_normalized:
+        return False
+    if left_normalized == right_normalized:
+        return True
+    left_tokens = set(significant_words(left_normalized))
+    right_tokens = set(significant_words(right_normalized))
+    if not left_tokens or not right_tokens:
+        return False
+    shared = len(left_tokens.intersection(right_tokens))
+    return shared >= 3 and shared / min(len(left_tokens), len(right_tokens)) >= 0.82
+
+
 def cluster_key_from_tokens(tokens: set[str], fallback: str) -> str:
     if not tokens:
         return stable_id("story", fallback, "")
@@ -3191,6 +3305,7 @@ def complete_story_refresh() -> None:
     fetch_article_evidence.clear()
     st.session_state.current_cluster_keys = []
     st.session_state.current_representative_ids = {}
+    st.session_state.current_update_cluster_keys = set()
     st.session_state.last_settings = None
     st.session_state.deep_analyses = {}
     st.session_state.research_briefs = {}
@@ -3206,6 +3321,7 @@ def complete_story_refresh() -> None:
 def load_next_story_batch() -> None:
     st.session_state.current_cluster_keys = []
     st.session_state.current_representative_ids = {}
+    st.session_state.current_update_cluster_keys = set()
     st.session_state.deep_analyses = {}
     st.session_state.research_briefs = {}
     st.session_state.story_questions = {}
@@ -5685,23 +5801,53 @@ def parse_iso_datetime(value: str) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def normalize_shown_cluster_history(raw: object) -> dict[str, str]:
+def history_timestamp(value: object) -> datetime | None:
+    if isinstance(value, dict):
+        value = value.get("shown_at", value.get("timestamp", ""))
+    return parse_iso_datetime(str(value))
+
+
+def normalize_history_text_list(value: object, limit: int = 24) -> list[str]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return []
+    normalized = []
+    for item in value:
+        text = clean_text(str(item)).lower()
+        if text and text not in normalized:
+            normalized.append(text)
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def normalize_shown_cluster_history(raw: object) -> dict[str, dict[str, object]]:
     if not isinstance(raw, dict):
         return {}
-    valid_entries: list[tuple[str, str, datetime]] = []
-    for cluster_key, timestamp in raw.items():
-        key = clean_text(str(cluster_key))
-        parsed = parse_iso_datetime(str(timestamp))
-        if key and parsed:
-            valid_entries.append((key, parsed.isoformat(), parsed))
+    valid_entries: list[tuple[str, dict[str, object], datetime]] = []
+    for raw_key, raw_value in raw.items():
+        key = clean_text(str(raw_key))
+        shown_at = history_timestamp(raw_value)
+        if not key or not shown_at:
+            continue
+        value = raw_value if isinstance(raw_value, dict) else {}
+        latest_published = parse_iso_datetime(str(value.get("latest_published", "")))
+        record: dict[str, object] = {
+            "shown_at": shown_at.isoformat(),
+            "cluster_key": clean_text(str(value.get("cluster_key", key))) or key,
+            "urls": normalize_history_text_list(value.get("urls", ())),
+            "headlines": normalize_history_text_list(value.get("headlines", ())),
+            "markers": normalize_history_text_list(value.get("markers", ()), limit=48),
+            "latest_published": latest_published.isoformat() if latest_published else "",
+        }
+        valid_entries.append((key, record, shown_at))
     valid_entries.sort(key=lambda entry: entry[2])
     return {
-        cluster_key: timestamp
-        for cluster_key, timestamp, _ in valid_entries[-500:]
+        key: record
+        for key, record, _ in valid_entries[-MAX_SHOWN_HISTORY_ENTRIES:]
     }
 
 
-def read_shown_cluster_history() -> dict[str, str]:
+def read_shown_cluster_history() -> dict[str, dict[str, object]]:
     try:
         with SHOWN_HISTORY_LEDGER_LOCK:
             raw = json.loads(SHOWN_HISTORY_LEDGER_PATH.read_text(encoding="utf-8"))
@@ -5729,13 +5875,165 @@ def write_shown_cluster_history(history: object) -> None:
             pass
 
 
+def ranked_story_history_payload(
+    item: RankedStory,
+    shown_at: datetime,
+) -> dict[str, object]:
+    candidates = deduplicate_stories((item.story, *item.article_candidates))
+    urls = list(
+        dict.fromkeys(
+            normalized_story_url(candidate.link)
+            for candidate in candidates
+            if normalized_story_url(candidate.link)
+        )
+    )
+    headlines = list(
+        dict.fromkeys(
+            normalized_story_text(clean_headline_source(candidate.title))
+            for candidate in candidates
+            if normalized_story_text(clean_headline_source(candidate.title))
+        )
+    )
+    markers = sorted(
+        {
+            marker
+            for candidate in candidates
+            for marker in material_update_markers(candidate.title)
+        }
+    )
+    published_dates = []
+    for candidate in candidates:
+        if not candidate.published:
+            continue
+        published = candidate.published
+        if published.tzinfo is None:
+            published = published.replace(tzinfo=timezone.utc)
+        published_dates.append(published.astimezone(timezone.utc))
+    latest_published = max(published_dates) if published_dates else None
+    return {
+        "shown_at": shown_at.isoformat(),
+        "cluster_key": item.cluster_key,
+        "urls": urls[:24],
+        "headlines": headlines[:24],
+        "markers": markers[:48],
+        "latest_published": latest_published.isoformat() if latest_published else "",
+    }
+
+
+def merge_history_payloads(
+    existing: object,
+    current: dict[str, object],
+) -> dict[str, object]:
+    if not isinstance(existing, dict):
+        return current
+    merged = dict(current)
+    for field, limit in (("urls", 24), ("headlines", 24), ("markers", 48)):
+        merged[field] = list(
+            dict.fromkeys(
+                [
+                    *normalize_history_text_list(existing.get(field, ()), limit=limit),
+                    *normalize_history_text_list(current.get(field, ()), limit=limit),
+                ]
+            )
+        )[-limit:]
+    existing_published = parse_iso_datetime(str(existing.get("latest_published", "")))
+    current_published = parse_iso_datetime(str(current.get("latest_published", "")))
+    latest = max(
+        (value for value in (existing_published, current_published) if value),
+        default=None,
+    )
+    merged["latest_published"] = latest.isoformat() if latest else ""
+    return merged
+
+
+def shown_history_records(history: object) -> tuple[ShownHistoryRecord, ...]:
+    if isinstance(history, (list, tuple)) and all(
+        isinstance(record, ShownHistoryRecord) for record in history
+    ):
+        return tuple(history)
+    if isinstance(history, (set, frozenset, list, tuple)):
+        now = utc_now()
+        return tuple(
+            ShownHistoryRecord(
+                key=clean_text(str(cluster_key)),
+                shown_at=now,
+                cluster_key=clean_text(str(cluster_key)),
+            )
+            for cluster_key in history
+            if clean_text(str(cluster_key))
+        )
+    normalized = normalize_shown_cluster_history(history)
+    records = []
+    for key, value in normalized.items():
+        shown_at = history_timestamp(value)
+        if not shown_at:
+            continue
+        records.append(
+            ShownHistoryRecord(
+                key=key,
+                shown_at=shown_at,
+                cluster_key=clean_text(str(value.get("cluster_key", key))) or key,
+                urls=frozenset(normalize_history_text_list(value.get("urls", ()))),
+                headlines=tuple(
+                    normalize_history_text_list(value.get("headlines", ()))
+                ),
+                markers=frozenset(
+                    normalize_history_text_list(value.get("markers", ()), limit=48)
+                ),
+                latest_published=parse_iso_datetime(
+                    str(value.get("latest_published", ""))
+                ),
+            )
+        )
+    return tuple(records)
+
+
+def shown_history_index(history: object) -> ShownHistoryIndex:
+    if isinstance(history, ShownHistoryIndex):
+        return history
+    records = shown_history_records(history)
+    cluster_indexes: dict[str, set[int]] = {}
+    url_indexes: dict[str, set[int]] = {}
+    headline_indexes: dict[str, set[int]] = {}
+    token_indexes: dict[str, set[int]] = {}
+    for index, record in enumerate(records):
+        cluster_indexes.setdefault(record.cluster_key, set()).add(index)
+        for url in record.urls:
+            url_indexes.setdefault(url, set()).add(index)
+        for headline in record.headlines:
+            headline_indexes.setdefault(headline, set()).add(index)
+            for token in set(significant_words(headline)):
+                token_indexes.setdefault(token, set()).add(index)
+    return ShownHistoryIndex(
+        records=records,
+        cluster_indexes={
+            key: frozenset(indexes) for key, indexes in cluster_indexes.items()
+        },
+        url_indexes={key: frozenset(indexes) for key, indexes in url_indexes.items()},
+        headline_indexes={
+            key: frozenset(indexes) for key, indexes in headline_indexes.items()
+        },
+        token_indexes={key: frozenset(indexes) for key, indexes in token_indexes.items()},
+    )
+
+
 def initialize_shown_cluster_history() -> None:
     if "shown_cluster_history" in st.session_state:
         return
     history = read_shown_cluster_history()
     now = utc_now().isoformat()
     for cluster_key in st.session_state.get("seen_cluster_keys", set()):
-        history.setdefault(str(cluster_key), now)
+        history.setdefault(
+            str(cluster_key),
+            {
+                "shown_at": now,
+                "cluster_key": str(cluster_key),
+                "urls": [],
+                "headlines": [],
+                "markers": [],
+                "latest_published": "",
+            },
+        )
     st.session_state.shown_cluster_history = history
     prune_shown_cluster_history()
 
@@ -5744,9 +6042,9 @@ def prune_shown_cluster_history() -> None:
     history = dict(st.session_state.get("shown_cluster_history", {}))
     cutoff = utc_now() - timedelta(hours=NO_REPEAT_HOURS)
     pruned = {
-        cluster_key: timestamp
-        for cluster_key, timestamp in history.items()
-        if (parsed := parse_iso_datetime(str(timestamp))) and parsed >= cutoff
+        cluster_key: record
+        for cluster_key, record in history.items()
+        if (parsed := history_timestamp(record)) and parsed >= cutoff
     }
     st.session_state.shown_cluster_history = pruned
     if pruned != history:
@@ -5756,12 +6054,16 @@ def prune_shown_cluster_history() -> None:
 def mark_batch_shown(batch: Sequence[RankedStory], refresh_key: str) -> None:
     if not batch:
         return
-    now = utc_now().isoformat()
+    now = utc_now()
     history = dict(st.session_state.get("shown_cluster_history", {}))
     for item in batch:
-        history[item.cluster_key] = now
+        payload = ranked_story_history_payload(item, now)
+        history[item.cluster_key] = merge_history_payloads(
+            history.get(item.cluster_key),
+            payload,
+        )
     st.session_state.shown_cluster_history = history
-    st.session_state.batch_refreshed_at = now
+    st.session_state.batch_refreshed_at = now.isoformat()
     st.session_state.batch_refresh_id = refresh_key
     write_shown_cluster_history(history)
 
@@ -5901,8 +6203,134 @@ def render_headline_legend(target: object | None = None) -> None:
     )
 
 
-def ranked_item_is_available(item: RankedStory, blocked_cluster_keys: set[str]) -> bool:
-    return item.cluster_key not in blocked_cluster_keys
+def story_published_utc(story: Story) -> datetime | None:
+    if not story.published:
+        return None
+    published = story.published
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=timezone.utc)
+    return published.astimezone(timezone.utc)
+
+
+def ranked_story_candidates(item: RankedStory) -> list[Story]:
+    return deduplicate_stories((item.story, *item.article_candidates))
+
+
+def matching_history_records(
+    item: RankedStory,
+    history: ShownHistoryIndex,
+) -> list[ShownHistoryRecord]:
+    candidates = ranked_story_candidates(item)
+    current_urls = {
+        normalized_story_url(candidate.link)
+        for candidate in candidates
+        if normalized_story_url(candidate.link)
+    }
+    current_headlines = [
+        normalized
+        for candidate in candidates
+        if (normalized := normalized_story_text(clean_headline_source(candidate.title)))
+    ]
+    current_headline_tokens = [
+        (headline, set(significant_words(headline))) for headline in current_headlines
+    ]
+    candidate_indexes = set(history.cluster_indexes.get(item.cluster_key, ()))
+    for url in current_urls:
+        candidate_indexes.update(history.url_indexes.get(url, ()))
+    for headline, tokens in current_headline_tokens:
+        candidate_indexes.update(history.headline_indexes.get(headline, ()))
+        token_hits: Counter[int] = Counter()
+        for token in tokens:
+            token_hits.update(history.token_indexes.get(token, ()))
+        candidate_indexes.update(
+            index for index, shared_count in token_hits.items() if shared_count >= 2
+        )
+    matches = []
+    for index in sorted(candidate_indexes):
+        record = history.records[index]
+        if item.cluster_key == record.cluster_key or current_urls.intersection(record.urls):
+            matches.append(record)
+            continue
+        matched = False
+        for current, current_tokens in current_headline_tokens:
+            for previous in record.headlines:
+                if headlines_are_near_duplicates(current, previous):
+                    matched = True
+                    break
+                previous_tokens = set(significant_words(previous))
+                if headline_event_similarity(current_tokens, previous_tokens) >= 0.34:
+                    matched = True
+                    break
+            if matched:
+                break
+        if matched:
+            matches.append(record)
+    return matches
+
+
+def story_is_exact_history_repeat(
+    story: Story,
+    records: Sequence[ShownHistoryRecord],
+) -> bool:
+    url = normalized_story_url(story.link)
+    headline = normalized_story_text(clean_headline_source(story.title))
+    current_markers = material_update_markers(story.title)
+    for record in records:
+        if url and url in record.urls:
+            return True
+        if any(
+            headlines_are_near_duplicates(headline, previous)
+            for previous in record.headlines
+        ) and not current_markers.difference(record.markers):
+            return True
+    return False
+
+
+def material_update_candidate(
+    item: RankedStory,
+    records: Sequence[ShownHistoryRecord],
+) -> Story | None:
+    if not records or not any(record.headlines or record.markers for record in records):
+        return None
+    previous_markers = set().union(*(record.markers for record in records))
+    previous_dates = [
+        max(record.shown_at, record.latest_published or record.shown_at)
+        for record in records
+    ]
+    latest_previous = max(previous_dates)
+    candidates = []
+    for candidate in ranked_story_candidates(item):
+        published = story_published_utc(candidate)
+        if not published or published <= latest_previous:
+            continue
+        if story_is_exact_history_repeat(candidate, records):
+            continue
+        new_markers = material_update_markers(candidate.title) - previous_markers
+        if not new_markers:
+            continue
+        candidates.append((published, len(new_markers), candidate))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda value: (value[0], value[1]))[2]
+
+
+def apply_no_repeat_policy(
+    item: RankedStory,
+    shown_history: object,
+) -> RankedStory | None:
+    history = shown_history_index(shown_history)
+    event_records = matching_history_records(item, history)
+    if not event_records:
+        return item
+    update_story = material_update_candidate(item, event_records)
+    if not update_story:
+        return None
+    return replace(
+        item,
+        story=update_story,
+        signal_label="Update",
+        is_material_update=True,
+    )
 
 
 def current_batch_from_keys(
@@ -5924,9 +6352,12 @@ def current_batch_from_keys(
             available_by_key.setdefault(item.cluster_key, item)
 
     current: list[RankedStory] = []
+    update_cluster_keys = set(
+        getattr(st.session_state, "current_update_cluster_keys", set())
+    )
     for cluster_key in current_cluster_keys:
         item = available_by_key.get(cluster_key)
-        if item and ranked_item_is_available(item, set()):
+        if item:
             representative_id = str(representative_ids.get(cluster_key, ""))
             representative = next(
                 (
@@ -5936,7 +6367,14 @@ def current_batch_from_keys(
                 ),
                 item.story,
             )
-            current.append(item if representative == item.story else replace(item, story=representative))
+            restored = item if representative == item.story else replace(item, story=representative)
+            if cluster_key in update_cluster_keys:
+                restored = replace(
+                    restored,
+                    signal_label="Update",
+                    is_material_update=True,
+                )
+            current.append(restored)
     return current
 
 
@@ -6008,16 +6446,20 @@ def prepare_ranked_story(
 def append_keyword_headlines(
     batch: list[RankedStory],
     keyword_rankings: dict[str, list[RankedStory]],
-    blocked_cluster_keys: set[str],
+    shown_history: object,
 ) -> list[RankedStory]:
+    history = shown_history_index(shown_history)
     combined = list(batch)
     used_cluster_keys = {item.cluster_key for item in combined}
     for keyword_items in keyword_rankings.values():
         for item in keyword_items:
-            if item.cluster_key in blocked_cluster_keys | used_cluster_keys:
+            if item.cluster_key in used_cluster_keys:
                 continue
-            combined.append(item)
-            used_cluster_keys.add(item.cluster_key)
+            eligible_item = apply_no_repeat_policy(item, history)
+            if not eligible_item:
+                continue
+            combined.append(eligible_item)
+            used_cluster_keys.add(eligible_item.cluster_key)
             break
     return combined
 
@@ -6036,7 +6478,7 @@ def diversified_story_representative(
     outlet_counts: Counter[str],
     max_per_outlet: int = MAX_HEADLINES_PER_OUTLET,
 ) -> RankedStory | None:
-    candidates = (item.story, *item.article_candidates)
+    candidates = (item.story,) if item.is_material_update else (item.story, *item.article_candidates)
     seen_outlets: set[str] = set()
     for candidate in candidates:
         outlet = outlet_identity(candidate.source)
@@ -6053,16 +6495,19 @@ def diversified_story_representative(
 
 def select_balanced_headlines(
     ranked_stories: Sequence[RankedStory],
-    blocked_cluster_keys: set[str],
+    shown_history: object,
     limit: int = BATCH_SIZE,
 ) -> list[RankedStory]:
     if limit <= 0:
         return []
-    eligible = [
-        item
-        for item in ranked_stories
-        if item.story.group != "Custom" and item.cluster_key not in blocked_cluster_keys
-    ]
+    history = shown_history_index(shown_history)
+    eligible = []
+    for item in ranked_stories:
+        if item.story.group == "Custom":
+            continue
+        eligible_item = apply_no_repeat_policy(item, history)
+        if eligible_item:
+            eligible.append(eligible_item)
     selected: list[RankedStory] = []
     selected_cluster_keys: set[str] = set()
     selected_categories: set[str] = set()
@@ -6152,14 +6597,17 @@ def build_headline_batch(
     if current:
         return sort_headlines_by_age(current)
 
-    shown_cluster_keys = set(st.session_state.shown_cluster_history)
-    batch = select_balanced_headlines(ranked_stories, shown_cluster_keys)
-    batch = append_keyword_headlines(batch, keyword_rankings, shown_cluster_keys)
+    history = shown_history_index(st.session_state.shown_cluster_history)
+    batch = select_balanced_headlines(ranked_stories, history)
+    batch = append_keyword_headlines(batch, keyword_rankings, history)
     batch = sort_headlines_by_age(batch)
     refresh_key = utc_now().isoformat()
     st.session_state.current_cluster_keys = [item.cluster_key for item in batch]
     st.session_state.current_representative_ids = {
         item.cluster_key: item.story.id for item in batch
+    }
+    st.session_state.current_update_cluster_keys = {
+        item.cluster_key for item in batch if item.is_material_update
     }
     mark_batch_shown(batch, refresh_key)
     return batch
@@ -6269,6 +6717,7 @@ def render_admin(errors: Sequence[str], batch_size: int) -> None:
                 write_shown_cluster_history({})
                 st.session_state.current_cluster_keys = []
                 st.session_state.current_representative_ids = {}
+                st.session_state.current_update_cluster_keys = set()
                 st.rerun()
 
         render_keyword_boosters()
@@ -6334,6 +6783,8 @@ def main() -> None:
         st.session_state.current_cluster_keys = []
     if "current_representative_ids" not in st.session_state:
         st.session_state.current_representative_ids = {}
+    if "current_update_cluster_keys" not in st.session_state:
+        st.session_state.current_update_cluster_keys = set()
     if "last_settings" not in st.session_state:
         st.session_state.last_settings = None
     if "deep_analyses" not in st.session_state:
@@ -6404,6 +6855,7 @@ def main() -> None:
     if st.session_state.last_settings != current_settings:
         st.session_state.current_cluster_keys = []
         st.session_state.current_representative_ids = {}
+        st.session_state.current_update_cluster_keys = set()
         st.session_state.last_settings = current_settings
 
     with st.spinner("Building a stronger story list..."):

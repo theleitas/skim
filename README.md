@@ -23,7 +23,7 @@ Skim can discover feeds without an AI key, but publishing cards requires an AI p
   relevance ranking to surface additional candidates.
 - Aggregator and social items no longer receive artificial reference bonuses. Cards show the real number of distinct outlets and reports in each event cluster.
 - The starting feed does not call AI. Publisher-page extraction and the AI brief happen only when you expand a headline.
-- Stories do not repeat for 24 hours, including after a fresh Streamlit session. Repeated reruns reuse cached discovery, extraction, and AI results.
+- Exact articles and repeated event coverage stay hidden for 24 hours, including after a fresh Streamlit session. A continuing event can return sooner only when a newer publisher report contains a concrete material development; those headlines are labeled `UPDATE`. Repeated reruns reuse cached discovery, extraction, and AI results.
 - **Refresh latest stories** repolls every discovery source on demand. **Load 20 more** advances to the next unseen headline list from the current discovery pool.
 
 Create an OpenAI API key, then set it before starting Streamlit locally:
